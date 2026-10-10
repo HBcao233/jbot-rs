@@ -1,0 +1,7 @@
+.env*
+*.session*
+cache/
+data/
+target
+*.log
+logs/
