@@ -131,7 +131,7 @@ async fn handler(client: Client, message: Arc<Message>) {
         };
 
         matched = true;
-        let Ok((aid, bvid)) = bili_id.to_raw() else {
+        let Some((aid, bvid)) = bili_id.to_raw() else {
             let _ = message.reply("avid/bvid 解析错误").await;
             return;
         };
@@ -165,7 +165,7 @@ async fn callback_handler(client: Client, update: Update, _session: Arc<SqliteSe
 
             if let Some((aid, p)) = GetBiliPageButton::from_data(data) {
                 let bili_id = BiliId::AV(aid);
-                let Ok((aid, bvid)) = bili_id.to_raw() else {
+                let Some((aid, bvid)) = bili_id.to_raw() else {
                     error!(?aid, "aid 解析错误");
                     let _ = callback.answer().alert("aid 解析错误").send().await;
                     return;
