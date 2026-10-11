@@ -1,5 +1,6 @@
 mod data_source;
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::env;
 use std::path::{Path, PathBuf};
@@ -11,12 +12,13 @@ use grammers_client::update::Update;
 use grammers_session::storages::SqliteSession;
 use grammers_session::types::{PeerId, PeerKind, PeerRef};
 use grammers_tl_types as tl;
-use jb_core::bili::types::{BiliError, BiliId, GaiaValidateData, Geetest, VgateData};
+use jb_core::bili::types::{BiliError, BiliId, DurlInfo, GaiaValidateData, Geetest, VgateData};
 use jb_core::bili::{get_gaia, validate_gaia};
 use regex::regex;
 use tokio::fs;
 use tokio::sync::{Mutex, oneshot};
 use tracing::{error, info, warn};
+use url::Url;
 
 use self::data_source::{get_bili, get_playurl, parse_msg};
 use crate::FFmpeg;
@@ -406,16 +408,82 @@ async fn send_bili(
 
         let bar = ProgressScheduler::new(Progress::new(Arc::clone(&mid)));
 
-        if let Some(dash) = playurl.dash {
-            let audio_path = match dash.audio {
-                None => None,
-                Some(audios) => {
-                    let audio = audios.into_iter().max_by_key(|x| x.id).unwrap();
-                    info!("使用 audio id: {}", audio.id);
+        let mut videos = Vec::new();
+        let mut audios = Vec::new();
+        let re = regex!(r"https://[^/]*akamaized\.net");
+        const HW_CDN: &str = "https://upos-sz-mirrorcos.bilivideo.com";
 
-                    let audio_url = audio.base_url;
-                    let audio_name = format!("{key}_audio.mp4");
-                    let tip = format!("{prefix} 下载音频中...");
+        if let Some(ref dash) = playurl.dash {
+            for v in dash.video.iter() {
+                if v.mime_type == "video/mp4" && v.codecid == 7 {
+                    let mut urls = Vec::with_capacity(1 + v.backup_url.len());
+                    urls.push(re.replace(&v.base_url, HW_CDN));
+                    urls.extend(v.backup_url.iter().map(|u| re.replace(u, HW_CDN)));
+                    videos.push(Video { id: v.id, urls });
+                }
+            }
+
+            if let Some(ref audio) = dash.audio {
+                for v in audio.iter() {
+                    if v.mime_type == "audio/mp4" {
+                        let mut urls = Vec::with_capacity(1 + v.backup_url.len());
+                        urls.push(re.replace(&v.base_url, HW_CDN));
+                        urls.extend(v.backup_url.iter().map(|u| re.replace(u, HW_CDN)));
+                        audios.push(Audio { id: v.id, urls });
+                    }
+                }
+            }
+        }
+
+        if let Some(ref durl) = playurl.durl {
+            let DurlInfo {
+                url, backup_url, ..
+            } = durl.iter().next().unwrap();
+            let mut urls =
+                Vec::with_capacity(1 + backup_url.as_ref().map(|b| b.len()).unwrap_or(0));
+
+            urls.push(re.replace(url, HW_CDN));
+
+            if let Some(backup) = backup_url {
+                urls.extend(backup.iter().map(|u| re.replace(u, HW_CDN)));
+            }
+
+            videos.push(Video {
+                id: playurl.quality.unwrap(),
+                urls,
+            });
+        }
+
+        match videos.into_iter().max_by_key(|x| x.id) {
+            None => None,
+            Some(video) => {
+                info!("{prefix} 使用 video id: {}", video.id);
+
+                let video_name = format!("{key}_video.mp4");
+
+                let mut i = 0;
+                let video_path = loop {
+                    let url = match video.urls.get(i) {
+                        Some(url) => {
+                            let u = Url::parse(url).unwrap();
+                            info!("CDN: {}", u.host().unwrap());
+                            url
+                        }
+                        None => {
+                            let tip = format!("{prefix} 所有下载尝试失败，请重试");
+                            mid.edit(tip).await?;
+                            return Ok(());
+                        }
+                    };
+
+                    let tip = format!(
+                        "{prefix} 下载视频中{}...",
+                        if i == 0 {
+                            String::new()
+                        } else {
+                            format!(" (重试 {i})")
+                        }
+                    );
                     info!("{tip}");
                     bar.style(ProgressStyle::Size);
                     bar.prefix(&tip);
@@ -423,8 +491,8 @@ async fn send_bili(
 
                     match stream_download_with_callback(
                         &wreq_client,
-                        &audio_url,
-                        &audio_name,
+                        url,
+                        &video_name,
                         &headers,
                         |downloaded, total| {
                             bar.sync_update(downloaded, total);
@@ -432,193 +500,137 @@ async fn send_bili(
                     )
                     .await
                     {
-                        Ok(path) => Some(path),
+                        Ok(path) => break path,
                         Err(e) => {
-                            let tip = format!("{prefix} 音频下载失败: {e}");
-                            error!("{tip}");
-                            mid.edit(tip).await?;
-                            return Ok(());
+                            warn!("{prefix} i={i} 下载失败: {e}");
                         }
                     }
-                }
-            };
+                    i += 1;
+                };
 
-            let video = dash
-                .video
-                .into_iter()
-                .filter(|x| &x.mime_type == "video/mp4" && x.codecs.starts_with("avc1"))
-                .max_by_key(|x| x.id)
-                .unwrap();
-            info!("{prefix} 使用 video id: {}", video.id);
+                let name = format!("{key}.mp4");
 
-            let mut video_urls = Vec::with_capacity(video.backup_url.len() + 1);
-            video_urls.push(video.base_url);
-            video_urls.extend(video.backup_url);
-            let video_name = format!("{key}_video.mp4");
+                let path = match audios.into_iter().max_by_key(|x| x.id) {
+                    None => video_path,
+                    Some(audio) => {
+                        info!("使用 audio id: {}", audio.id);
 
-            let mut i = 0;
-            let video_path = loop {
-                let url = &video_urls[i];
-                let tip = format!(
-                    "{prefix} 下载视频中{}...",
-                    if i == 0 {
-                        String::new()
-                    } else {
-                        format!(" (重试 {i})")
+                        let audio_name = format!("{key}_audio.mp4");
+
+                        let mut i = 0;
+                        let audio_path = loop {
+                            let url = match audio.urls.get(i) {
+                                Some(url) => {
+                                    let u = Url::parse(url).unwrap();
+                                    info!("CDN: {}", u.host().unwrap());
+                                    url
+                                }
+                                None => {
+                                    let tip = format!("{prefix} 所有下载尝试失败，请重试");
+                                    mid.edit(tip).await?;
+                                    return Ok(());
+                                }
+                            };
+
+                            let tip = format!(
+                                "{prefix} 下载视频中{}...",
+                                if i == 0 {
+                                    String::new()
+                                } else {
+                                    format!(" (重试 {i})")
+                                }
+                            );
+                            info!("{tip}");
+                            bar.style(ProgressStyle::Size);
+                            bar.prefix(&tip);
+                            mid.edit(tip).await?;
+
+                            match stream_download_with_callback(
+                                &wreq_client,
+                                &url,
+                                &audio_name,
+                                &headers,
+                                |downloaded, total| {
+                                    bar.sync_update(downloaded, total);
+                                },
+                            )
+                            .await
+                            {
+                                Ok(audio_path) => break audio_path,
+                                Err(e) => {
+                                    warn!("{prefix} i={i} 下载失败: {e}");
+                                }
+                            }
+                            i += 1;
+                        };
+
+                        let tip = format!("{prefix} 处理中...");
+                        info!("{tip}");
+                        bar.style(ProgressStyle::Time);
+                        bar.prefix(&tip);
+                        mid.edit(tip).await?;
+
+                        match merge_media(audio_path, video_path, &name, |current, total| {
+                            bar.sync_update(current, total);
+                        })
+                        .await
+                        {
+                            Ok(p) => p,
+                            Err(e) => {
+                                let tip = format!("{prefix} 视频处理失败");
+                                error!("{tip}: {e}");
+                                mid.edit(tip).await?;
+                                return Ok(());
+                            }
+                        }
                     }
-                );
+                };
+
+                let tip = format!("{prefix} 上传中...");
                 info!("{tip}");
                 bar.style(ProgressStyle::Size);
                 bar.prefix(&tip);
                 mid.edit(tip).await?;
-                match stream_download_with_callback(
-                    &wreq_client,
-                    url,
-                    &video_name,
-                    &headers,
-                    |downloaded, total| {
-                        bar.sync_update(downloaded, total);
-                    },
-                )
+                let Ok(uploaded) = upload_file_with_callback(&client, path, |uploaded, total| {
+                    bar.sync_update(uploaded, total);
+                })
                 .await
-                {
-                    Ok(path) => break path,
-                    Err(e) => {
-                        if i < video_urls.len() {
-                            i += 1;
-                        } else {
-                            let tip = format!("{prefix} 视频下载失败: {e}");
-                            error!("{tip}");
-                            mid.edit(tip).await?;
-                            return Ok(());
-                        }
-                    }
-                }
-            };
-
-            let name = format!("{key}.mp4");
-            let path = match audio_path {
-                None => video_path,
-                Some(ap) => {
-                    let tip = format!("{prefix} 处理中...");
-                    info!("{tip}");
-                    bar.style(ProgressStyle::Time);
-                    bar.prefix(&tip);
-                    mid.edit(tip).await?;
-
-                    match merge_media(ap, video_path, &name, |current, total| {
-                        bar.sync_update(current, total);
-                    })
-                    .await
-                    {
-                        Ok(p) => p,
-                        Err(e) => {
-                            let tip = format!("{prefix} 视频处理失败");
-                            error!("{tip}: {e}");
-                            mid.edit(tip).await?;
-                            return Ok(());
-                        }
-                    }
-                }
-            };
-
-            let tip = format!("{prefix} 上传中...");
-            info!("{tip}");
-            bar.style(ProgressStyle::Size);
-            bar.prefix(&tip);
-            mid.edit(tip).await?;
-            let Ok(uploaded) = upload_file_with_callback(&client, path, |uploaded, total| {
-                bar.sync_update(uploaded, total);
-            })
-            .await
-            else {
-                mid.edit(format!("{prefix} 上传失败")).await?;
-                return Ok(());
-            };
-
-            Some(
-                tl::types::InputMediaUploadedDocument {
-                    nosound_video: true,
-                    force_file: false,
-                    spoiler: false,
-                    file: uploaded.raw,
-                    thumb,
-                    mime_type: "video/mp4".to_string(),
-                    attributes: vec![
-                        tl::types::DocumentAttributeFilename { file_name: name }.into(),
-                        tl::types::DocumentAttributeVideo {
-                            round_message: false,
-                            supports_streaming: true,
-                            nosound: false,
-                            duration,
-                            w,
-                            h,
-                            preload_prefix_size: None,
-                            video_start_ts: None,
-                            video_codec: None,
-                        }
-                        .into(),
-                    ],
-                    stickers: None,
-                    ttl_seconds: None,
-                    video_cover: None,
-                    video_timestamp: None,
-                }
-                .into(),
-            )
-        } else if let Some(durl) = playurl.durl {
-            let url = durl.into_iter().next().unwrap().url.clone();
-
-            mid.edit(format!("{prefix} 下载中...")).await?;
-            let name = format!("{key}.mp4");
-            let path = match stream_download(&wreq_client, &url, &name, &headers).await {
-                Ok(path) => path,
-                Err(e) => {
-                    let tip = format!("{prefix} 下载失败: {e}");
-                    error!("{tip}");
-                    mid.edit(tip).await?;
+                else {
+                    mid.edit(format!("{prefix} 上传失败")).await?;
                     return Ok(());
-                }
-            };
+                };
 
-            mid.edit(format!("{prefix} 上传中...")).await?;
-            let Ok(uploaded) = client.upload_file(path).await else {
-                mid.edit(format!("{prefix} 上传失败")).await?;
-                return Ok(());
-            };
-
-            Some(
-                tl::types::InputMediaUploadedDocument {
-                    nosound_video: true,
-                    force_file: false,
-                    spoiler: false,
-                    file: uploaded.raw,
-                    thumb,
-                    mime_type: "video/mp4".to_string(),
-                    attributes: vec![
-                        tl::types::DocumentAttributeFilename { file_name: name }.into(),
-                        tl::types::DocumentAttributeVideo {
-                            round_message: false,
-                            supports_streaming: true,
-                            nosound: false,
-                            duration,
-                            w,
-                            h,
-                            preload_prefix_size: None,
-                            video_start_ts: None,
-                            video_codec: None,
-                        }
-                        .into(),
-                    ],
-                    stickers: None,
-                    ttl_seconds: None,
-                    video_cover: None,
-                    video_timestamp: None,
-                }
-                .into(),
-            )
-        } else {
-            None
+                Some(
+                    tl::types::InputMediaUploadedDocument {
+                        nosound_video: true,
+                        force_file: false,
+                        spoiler: false,
+                        file: uploaded.raw,
+                        thumb,
+                        mime_type: "video/mp4".to_string(),
+                        attributes: vec![
+                            tl::types::DocumentAttributeFilename { file_name: name }.into(),
+                            tl::types::DocumentAttributeVideo {
+                                round_message: false,
+                                supports_streaming: true,
+                                nosound: false,
+                                duration,
+                                w,
+                                h,
+                                preload_prefix_size: None,
+                                video_start_ts: None,
+                                video_codec: None,
+                            }
+                            .into(),
+                        ],
+                        stickers: None,
+                        ttl_seconds: None,
+                        video_cover: None,
+                        video_timestamp: None,
+                    }
+                    .into(),
+                )
+            }
         }
     };
 
@@ -664,6 +676,16 @@ async fn send_bili(
         .await?;
 
     Ok(())
+}
+
+struct Video<'a> {
+    id: i32,
+    urls: Vec<Cow<'a, str>>,
+}
+
+struct Audio<'a> {
+    id: i32,
+    urls: Vec<Cow<'a, str>>,
 }
 
 pub async fn merge_media<F>(
