@@ -40,7 +40,7 @@ async fn handler(client: Client, message: Arc<Message>) {
         .unwrap_or_else(|| peer_id.to_ambient_ref());
 
     let re = regex!(
-        r"(?:https?://)?(?:www\.|so\.)?(?:ies)?douyin\.com/(?:.*?video/|(?:share/)?note/|.*?modal_id=|.*?actv_aid=)?([0-9]{12,20})"
+        r"(?:https?://)?(?:www\.|so\.)?(?:ies)?douyin\.com/(?:.*?video/|(?:share/)?(?:note|slides)/|.*?modal_id=|.*?actv_aid=)?([0-9]{12,20})"
     );
     let short_re = regex!(r"(?:https?://)?v\.douyin\.com/([0-9a-zA-Z_-]{5,14})");
 
