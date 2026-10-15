@@ -433,7 +433,7 @@ async fn send_original(client: Client, callback: CallbackQuery, tid: u64) {
                         };
                         ("jpg", url, "image/jpeg")
                     }
-                    "video" => {
+                    "video" | "animated_gif" => {
                         let video = media
                             .video_info
                             .as_ref()
