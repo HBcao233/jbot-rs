@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -159,13 +160,16 @@ pub(crate) fn get_or_insert(client: Client, peer_id: PeerId, message: Arc<Messag
     let peer_id = peer_id.bot_api_dialog_id().unwrap();
     let mut guard = peer_grouped_medias().lock().unwrap();
 
-    if let Some(group) = guard.get_mut(&peer_id) {
-        if !group.ended.load(Ordering::SeqCst) {
-            group.push(message);
-            return;
+    match guard.entry(peer_id) {
+        Entry::Occupied(mut entry) => {
+            if !entry.get().ended.load(Ordering::SeqCst) {
+                entry.get_mut().push(message);
+            } else {
+                entry.insert(GroupedMedias::new(client, message, peer_id));
+            }
+        }
+        Entry::Vacant(entry) => {
+            entry.insert(GroupedMedias::new(client, message, peer_id));
         }
     }
-
-    let group = GroupedMedias::new(client, message, peer_id);
-    guard.insert(peer_id, group);
 }
