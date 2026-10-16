@@ -10,7 +10,6 @@ pub async fn get_bili(
     client: &Client,
     aid: u64,
     bvid: &str,
-    grisk_id: Option<String>,
 ) -> Result<BiliInfo, BiliError> {
     let cache_dir = crate::cache_dir().join("bilis");
     if let Err(e) = fs::create_dir_all(&cache_dir).await {
@@ -23,7 +22,7 @@ pub async fn get_bili(
         cookies.push(("SESSDATA", s.to_string()));
     }
 
-    fetch_bili_info(client, aid, bvid, grisk_id, &cookies, &cache_dir).await
+    fetch_bili_info(client, aid, bvid, &cookies, &cache_dir).await
 }
 
 pub fn parse_msg(info: BiliInfo, p: u16) -> Result<(String, Page, String), ()> {
@@ -76,7 +75,7 @@ pub async fn get_playurl(
     aid: u64,
     bvid: &str,
     cid: i64,
-    grisk_id: Option<String>,
+    grisk_id: Option<&str>,
 ) -> Result<PlayurlInfo, BiliError> {
     let cache_dir = Path::new("cache/bilis");
     if let Err(e) = fs::create_dir_all(cache_dir).await {

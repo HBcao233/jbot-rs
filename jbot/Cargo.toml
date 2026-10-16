@@ -81,7 +81,7 @@ all = [
 
 [dependencies]
 jbot-macro = { path = "../jbot-macro" }
-jb-core = { path = "../../jb-rs/jb-core", optional = true }
+jb-core = { path = "../../jb-rs/jb-core", version = "0.3.0", optional = true }
 
 grammers-client = { path = "../../grammers/grammers-client", default-features = false, features = ["fs", "html"] }
 grammers-session = { path = "../../grammers/grammers-session", default-features = false, features = ["sqlite-storage"] }
