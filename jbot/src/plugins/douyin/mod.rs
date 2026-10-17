@@ -14,14 +14,14 @@ use tracing::{error, info, warn};
 use wreq::redirect::Policy;
 
 use self::data_source::{get_aweme_detail, parse_msg};
-use crate::curl::{stream_download, stream_download_with_callback};
-use crate::database as db;
-use crate::progress::{Progress, ProgressScheduler, ProgressStyle};
-use crate::utils::upload_file_with_callback;
+use jbot_core::curl::{get_client, stream_download, stream_download_with_callback};
+use jbot_core::database as db;
+use jbot_core::progress::{Progress, ProgressScheduler, ProgressStyle};
+use jbot_core::utils::upload_file_with_callback;
 
 const HELP: &str = "Bilibili 解析。用法: /bili <url>";
 
-#[crate::on_new_message]
+#[jbot_core::on_new_message]
 async fn handler(client: Client, message: Arc<Message>) {
     if message.outgoing() {
         return;
@@ -53,7 +53,7 @@ async fn handler(client: Client, message: Arc<Message>) {
         let (_, [short_id]) = caps.extract();
         info!("v.douyin.com: {short_id}");
         let url = format!("https://v.douyin.com/{}", short_id);
-        let wreq_client = crate::curl::get_client().build().unwrap();
+        let wreq_client = get_client().build().unwrap();
         let response = match wreq_client.get(url).send().await {
             Ok(r) => r,
             Err(e) => {
@@ -126,7 +126,7 @@ async fn send_douyin(
         .await?;
     let mut mid = Arc::new(mid);
 
-    let wreq_client = crate::curl::get_client().build()?;
+    let wreq_client = get_client().build()?;
     let detail = match get_aweme_detail(&wreq_client, aid).await {
         Ok(d) => d,
         Err(e) => {
@@ -140,9 +140,7 @@ async fn send_douyin(
     // let aweme_type = detail.aweme_type;
     // info!("aweme_type: {aweme_type}");
 
-    let down_client = crate::curl::get_client()
-        .redirect(Policy::limited(5))
-        .build()?;
+    let down_client = get_client().redirect(Policy::limited(5)).build()?;
     let headers = vec![("referer", "https://www.douyin.com/".to_string())];
 
     let mut deleted = false;

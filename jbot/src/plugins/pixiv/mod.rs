@@ -10,6 +10,7 @@ use grammers_client::message::{InputMessage, Message};
 use grammers_session::types::{PeerKind, PeerRef};
 use grammers_tl_types as tl;
 use jb_core::pixiv::types::{ImageResolution, Manga, UgoiraMeta};
+use jbot_core::{FFmpeg, cache_dir};
 use regex::regex;
 use tokio::{fs, io};
 use tracing::{error, info, warn};
@@ -17,14 +18,14 @@ use tracing::{error, info, warn};
 use self::data_source::{
     create_ugoira_frames_txt, get_info, get_ugoira_meta, parse_msg, unzip_ugoira,
 };
-use crate::curl::stream_download;
-use crate::database as db;
+use jbot_core::curl::{get_client, stream_download};
+use jbot_core::database as db;
 
 const HELP: &str = "Pixiv 解析。用法: /pixiv <url/pid>";
 
 static PHPSESSID: OnceLock<Option<String>> = OnceLock::new();
 
-#[crate::on_setup]
+#[jbot_core::on_setup]
 fn setup() -> anyhow::Result<()> {
     let key = env::var("pixiv_PHPSESSID").ok();
     if key.is_none() {
@@ -37,7 +38,7 @@ fn setup() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[crate::on_new_message]
+#[jbot_core::on_new_message]
 async fn handler(client: Client, message: Arc<Message>) {
     if message.outgoing() {
         return;
@@ -108,7 +109,7 @@ async fn send_pixiv(
         )
         .await?;
 
-    let wreq_client = crate::core::curl::get_client().build()?;
+    let wreq_client = get_client().build()?;
     let info = match get_info(&wreq_client, pid).await {
         Ok(info) => info,
         Err(e) => {
@@ -150,7 +151,7 @@ async fn send_pixiv(
                 }
             };
 
-            let pixiv_cache_dir = crate::cache_dir().join("pixiv/");
+            let pixiv_cache_dir = cache_dir().join("pixiv/");
 
             let ugoira_dir = pixiv_cache_dir.join(format!("{pid}_ugoira"));
             let exist = match fs::metadata(&ugoira_dir).await {
@@ -188,7 +189,7 @@ async fn send_pixiv(
             let duration = duration as f64 / 1000.0;
 
             let target = pixiv_cache_dir.join(format!("{pid}_ugoira.mp4"));
-            match crate::FFmpeg::new()
+            match FFmpeg::new()
                 .arg("-f")
                 .arg("concat")
                 .arg("-safe")
@@ -363,13 +364,13 @@ async fn send_pixiv(
                     illust_image_width,
                     illust_image_height,
                 }) if *illust_image_width > 2560 || *illust_image_height > 2560 => {
-                    let resize_path = crate::cache_dir().join(format!("{key}_resize.{ext}"));
+                    let resize_path = cache_dir().join(format!("{key}_resize.{ext}"));
                     let scale = if illust_image_width > illust_image_height {
                         "scale=2560:-1"
                     } else {
                         "scale=-1:2560"
                     };
-                    match crate::FFmpeg::new()
+                    match FFmpeg::new()
                         .arg("-i")
                         .arg(path)
                         .arg("-vf")

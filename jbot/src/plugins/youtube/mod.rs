@@ -5,6 +5,7 @@ use std::sync::Arc;
 use grammers_client::Client;
 use grammers_client::message::{InputMessage, Message};
 use grammers_session::types::{PeerKind, PeerRef};
+use jbot_core::curl::get_client;
 use regex::regex;
 use tracing::{error, info};
 
@@ -12,7 +13,7 @@ use self::data_source::{get_info, parse_msg};
 
 const HELP: &str = "Youtube 解析。用法: /youtube <url>";
 
-#[crate::on_new_message]
+#[jbot_core::on_new_message]
 async fn handler(client: Client, message: Arc<Message>) {
     if message.outgoing() {
         return;
@@ -74,7 +75,7 @@ async fn send_youtube(
         )
         .await?;
 
-    let wreq_client = crate::core::curl::get_client().build()?;
+    let wreq_client = get_client().build()?;
     let info = match get_info(&wreq_client, video_id).await {
         Ok(info) => info,
         Err(e) => {

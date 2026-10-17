@@ -10,6 +10,7 @@ use grammers_session::Session;
 use grammers_session::storages::SqliteSession;
 use grammers_session::types::{PeerId, PeerRef};
 use grammers_tl_types as tl;
+use jbot_core::id;
 use jiff::{SignedDuration, Timestamp};
 use rand::prelude::IteratorRandom;
 use rand::{random_range, rng};
@@ -43,7 +44,7 @@ static CONFIG: Config = Config {
     name: "入群验证",
 };
 
-#[crate::on_update]
+#[jbot_core::on_update]
 async fn handler(client: Client, update: Update, session: Arc<SqliteSession>) {
     match update {
         Update::NewMessage(message) => {
@@ -317,7 +318,7 @@ fn truncate_name(s: &str) -> String {
 pub struct VerifyButton;
 
 impl VerifyButton {
-    const ID: [u8; 4] = crate::id!("verify");
+    const ID: [u8; 4] = id!("verify");
 
     pub fn new(user_id: PeerId, index: u32) -> Button {
         let mut data = Vec::with_capacity(16);
@@ -437,7 +438,7 @@ async fn handle_verify(
 }
 
 /// 定时检查是否有验证超时的成员
-#[crate::on_interval]
+#[jbot_core::on_interval]
 async fn on_interval(client: Client, session: Arc<SqliteSession>) {
     let all_verifying = match database::get_all_verifying().await {
         Ok(x) => x,
@@ -492,7 +493,7 @@ async fn on_interval(client: Client, session: Arc<SqliteSession>) {
 pub struct AdminVerifyButton;
 
 impl AdminVerifyButton {
-    const ID: [u8; 4] = crate::id!("verify_admin");
+    const ID: [u8; 4] = id!("verify_admin");
 
     pub fn new(user_id: PeerId) -> Button {
         let mut data = Vec::with_capacity(12);
@@ -596,7 +597,7 @@ async fn handle_admin_verify(client: Client, callback: CallbackQuery, user_id: P
 pub struct AdminKickButton;
 
 impl AdminKickButton {
-    const ID: [u8; 4] = crate::id!("verify_admin_kick");
+    const ID: [u8; 4] = id!("verify_admin_kick");
 
     pub fn new(user_id: PeerId) -> Button {
         let mut data = Vec::with_capacity(12);

@@ -5,6 +5,7 @@ use std::path::Path;
 use std::sync::OnceLock;
 
 use futures_util::StreamExt;
+use jbot_core::curl::get_client;
 use jiff::Timestamp;
 use rand::RngExt;
 use tracing::{trace, warn};
@@ -18,7 +19,7 @@ static PICGO_ALBUM_ID: OnceLock<Option<String>> = OnceLock::new();
 
 const OG_IMAGE_PREFIX: &str = "<meta property=\"og:image\" content=\"";
 
-#[crate::on_setup]
+#[jbot_core::on_setup]
 fn setup() -> anyhow::Result<()> {
     let picgo_api_key = env::var("picgo_api_key").ok();
     PICGO_API_KEY
@@ -34,7 +35,7 @@ fn setup() -> anyhow::Result<()> {
 }
 
 pub async fn get_url(path: impl AsRef<Path>) -> Result<String, UploadError> {
-    let client = crate::core::curl::get_client().build()?;
+    let client = get_client().build()?;
     if let Some(picgo_api_key) = PICGO_API_KEY.get().expect("Must be initialized.") {
         trace!("使用 picgo 上传");
         let picgo_album_id = PICGO_ALBUM_ID

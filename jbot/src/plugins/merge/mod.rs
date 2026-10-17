@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use grammers_client::Client;
 use grammers_client::media::InputMedia;
-use grammers_client::message::{InputMessage, Message, ReplyMarkup};
+use grammers_client::message::{Button, InputMessage, Message, ReplyMarkup};
 use grammers_client::update::{CallbackQuery, Update};
 use grammers_session::storages::SqliteSession;
 use grammers_session::types::PeerRef;
@@ -14,7 +14,17 @@ use tracing::{error, info};
 
 pub use self::buttons::{AddMergeButton, DirectMergeButton, FinishMergeButton};
 
-#[crate::on_update]
+#[jbot_core::on_grouped_buttons]
+fn on_grouped(messages: &[Arc<Message>]) -> Vec<Button> {
+    let message_ids: Vec<i32> = messages.iter().map(|m| m.id()).collect();
+
+    vec![
+        AddMergeButton::new(&message_ids),
+        DirectMergeButton::new(&message_ids),
+    ]
+}
+
+#[jbot_core::on_update]
 async fn callback_handler(client: Client, update: Update, _session: Arc<SqliteSession>) {
     match update {
         Update::CallbackQuery(callback) => {

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use grammers_client::Client;
 use grammers_client::media::{InputMedia, Media};
-use grammers_client::message::{InputMessage, Message, ReplyMarkup};
+use grammers_client::message::{Button, InputMessage, Message, ReplyMarkup};
 use grammers_client::update::{CallbackQuery, Update};
 use grammers_session::storages::SqliteSession;
 use grammers_tl_types as tl;
@@ -15,7 +15,20 @@ pub use self::buttons::SwitchSpoilerButton;
 const ADD_SPOILER: &str = "\u{01f648} 添加遮罩";
 const REMOVE_SPOILER: &str = "\u{01f441} 移除遮罩";
 
-#[crate::on_update]
+#[jbot_core::on_grouped_buttons]
+fn on_grouped(messages: &[Arc<Message>]) -> Vec<Button> {
+    let message_ids: Vec<i32> = messages.iter().map(|m| m.id()).collect();
+
+    let message = messages.first().unwrap();
+    let spoilered = match message.media() {
+        Some(Media::Photo(p)) => p.is_spoiler(),
+        Some(Media::Document(d)) => d.is_spoiler(),
+        _ => false,
+    };
+    vec![SwitchSpoilerButton::new(false, spoilered, &message_ids)]
+}
+
+#[jbot_core::on_update]
 async fn callback_handler(client: Client, update: Update, _session: Arc<SqliteSession>) {
     match update {
         Update::CallbackQuery(callback) => {

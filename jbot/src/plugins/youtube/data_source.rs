@@ -2,6 +2,7 @@ use std::path::Path;
 
 use jb_core::youtube::get_video_info;
 use jb_core::youtube::types::{VideoDetails, YoutubeError};
+use jbot_core::utils::safe_truncate;
 use tokio::fs;
 use wreq::Client;
 
@@ -25,7 +26,7 @@ pub fn parse_msg(info: &VideoDetails) -> String {
     let channel_id = &info.channel_id;
     let mut desc = info.short_description.to_string();
     if !desc.is_empty() {
-        desc = crate::utils::safe_truncate(&desc, 900);
+        desc = safe_truncate(&desc, 900);
         desc = format!("\n<blockquote expandable>{desc}</blockquote>");
     }
     format!(

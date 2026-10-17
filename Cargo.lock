@@ -1064,7 +1064,7 @@ dependencies = [
 
 [[package]]
 name = "jbot"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "dotenvy",
@@ -1074,7 +1074,7 @@ dependencies = [
  "grammers-session",
  "grammers-tl-types",
  "jb-core",
- "jbot-macro",
+ "jbot-core",
  "jiff",
  "libsql",
  "linkme",
@@ -1089,16 +1089,35 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tracing",
- "tracing-appender",
- "tracing-subscriber",
  "url",
  "wreq",
  "wreq-util",
 ]
 
 [[package]]
+name = "jbot-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures-util",
+ "grammers-client",
+ "grammers-session",
+ "grammers-tl-types",
+ "jbot-macro",
+ "jiff",
+ "libsql",
+ "linkme",
+ "tokio",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "wreq",
+ "wreq-util",
+]
+
+[[package]]
 name = "jbot-macro"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "quote",
  "syn 3.0.6",

@@ -1,6 +1,6 @@
 [package]
 name = "jbot"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["HBcao <hbcaoqaq@outlook.com>"]
 license = "MIT OR Apache-2.0"
 description = ""
@@ -12,8 +12,7 @@ edition = "2024"
 
 [features]
 core_curl = [
-    "dep:wreq",
-    "dep:wreq-util",
+    "jbot-core/core_curl",
     "dep:futures-util",
 ]
 
@@ -21,12 +20,17 @@ roll = ["dep:rand"]
 merge = []
 spoiler = []
 group_config = []
-verify = ["group_config", "dep:rand"]
+verify = [
+    "group_config",
+    "dep:rand",
+    "dep:libsql",
+]
 hosting = [
     "core_curl",
     "dep:serde",
     "dep:thiserror",
     "dep:rand",
+    "dep:wreq",
 ]
 
 bili = [
@@ -80,17 +84,17 @@ all = [
 ]
 
 [dependencies]
-jbot-macro = { path = "../jbot-macro" }
+jbot-core = { path = "../jbot-core" }
 jb-core = { path = "../../jb-rs/jb-core", version = "0.3.0", optional = true }
 
 grammers-client = { path = "../../grammers/grammers-client", default-features = false, features = ["fs", "html"] }
 grammers-session = { path = "../../grammers/grammers-session", default-features = false, features = ["sqlite-storage"] }
 grammers-tl-types = { path = "../../grammers/grammers-tl-types" }
 
+linkme = { version = "0.3.37", default-features = false }
+
 anyhow = { version = "1.0", default-features = false }
 dotenvy = { version = "0.15", default-features = false }
-linkme = { version = "0.3", default-features = false }
-libsql = { version = "0.9", default-features = false, features = ["core"] }
 tokio = { version = "1.52.3", default-features = false, features = [
     "rt",
     "rt-multi-thread",
@@ -99,17 +103,20 @@ tokio = { version = "1.52.3", default-features = false, features = [
 ] }
 jiff = { version = "0.2.37", default-features = false, features = ["std"] }
 tracing = { version = "0.1.44", default-features = false }
-tracing-subscriber = { version = "0.3", default-features = false, features = ["ansi", "fmt", "std", "env-filter"]}
-tracing-appender = { version = "0.2", default-features = false }
+
 sysinfo = { version = "0.39", default-features = false, features = ["disk", "system"] }
 
-regex = { version = "1.13", optional = true }
+# ========== optional ==========
+
+libsql = { version = "0.9.30", default-features = false, features = ["core"], optional = true }
 wreq = { version = "0.16.1", features = ["query", "form", "json", "stream", "multipart"], optional = true }
 wreq-util = { version = "0.2.0", optional = true }
+futures-util = { version = "0.3", optional = true }
+
+regex = { version = "1.13", optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0", optional = true }
 thiserror = { version = "2.0", optional = true }
-futures-util = { version = "0.3", optional = true }
 rand = { version = "0.10", optional = true }
 form_urlencoded = { version = "1.2", optional = true }
 md5 = { version = "0.8", optional = true }

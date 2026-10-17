@@ -28,7 +28,7 @@ const HELP: &str = "<b>Hi! 这里是小派魔6号姬!</b>
 
 对小派魔有任何建议或意见欢迎前往 <a href=\"https://t.me/HBcaoHome\">🍀派魔喵の家🍥</a> 私聊或评论喵！";
 
-#[crate::on_new_message]
+#[jbot_core::on_new_message]
 async fn handler(_client: Client, message: Arc<Message>) {
     if message.outgoing() {
         return;

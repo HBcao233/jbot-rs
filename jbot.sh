@@ -60,7 +60,7 @@ _start(){
     if [ ${status} -gt 0 ]; then
         echo "jbot 已经正在运行啦"
     else
-        cd $root && nohup $root/target/release/jbot > $root/bot.log 2>&1 &
+        cd $root && nohup $root/target/production/jbot > $root/bot.log 2>&1 &
         echo "启动 jbot 中..."
     fi
 }

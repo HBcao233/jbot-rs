@@ -1,10 +1,11 @@
 use grammers_client::message::Button;
+use jbot_core::id;
 use tracing::warn;
 
 pub struct SwitchSpoilerButton;
 
 impl SwitchSpoilerButton {
-    const ID: [u8; 4] = crate::id!("switch_spoiler");
+    const ID: [u8; 4] = id!("switch_spoiler");
 
     pub fn new(outgoing: bool, spoilered: bool, message_ids: &[i32]) -> Button {
         if message_ids.len() > 10 {

@@ -1,9 +1,10 @@
 use grammers_client::message::Button;
+use jbot_core::id;
 
 pub struct SoutuButton;
 
 impl SoutuButton {
-    const ID: [u8; 4] = crate::id!("soutu");
+    const ID: [u8; 4] = id!("soutu");
 
     pub fn new(message_id: i32) -> Button {
         let mut data = Vec::with_capacity(45);

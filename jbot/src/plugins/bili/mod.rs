@@ -21,11 +21,11 @@ use tracing::{error, info, warn};
 use url::Url;
 
 use self::data_source::{get_bili, get_playurl, parse_msg};
-use crate::FFmpeg;
-use crate::curl::{stream_download, stream_download_with_callback};
-use crate::database as db;
-use crate::progress::{Progress, ProgressScheduler, ProgressStyle};
-use crate::utils::upload_file_with_callback;
+use jbot_core::curl::{get_client, stream_download, stream_download_with_callback};
+use jbot_core::database as db;
+use jbot_core::progress::{Progress, ProgressScheduler, ProgressStyle};
+use jbot_core::utils::upload_file_with_callback;
+use jbot_core::{FFmpeg, id};
 
 const HELP: &str = "Bilibili 解析。用法: /bili <url>";
 
@@ -34,7 +34,7 @@ static SESSDATA: OnceLock<Option<String>> = OnceLock::new();
 type Gaia = Arc<Mutex<HashMap<PeerId, oneshot::Sender<(String, String)>>>>;
 static GAIA: OnceLock<Gaia> = OnceLock::new();
 
-#[crate::on_setup]
+#[jbot_core::on_setup]
 fn setup() -> anyhow::Result<()> {
     let sessdata = env::var("bili_SESSDATA").ok();
     if sessdata.is_none() {
@@ -48,7 +48,7 @@ fn gaia() -> Gaia {
     Arc::clone(GAIA.get_or_init(|| Arc::new(Mutex::new(HashMap::new()))))
 }
 
-#[crate::on_new_message]
+#[jbot_core::on_new_message]
 async fn handler(client: Client, message: Arc<Message>) {
     if message.outgoing() {
         return;
@@ -96,7 +96,7 @@ async fn handler(client: Client, message: Arc<Message>) {
         let (_, [b23_id]) = caps.extract();
         info!("b23.tv: {b23_id}");
         let url = format!("https://b23.tv/{}", b23_id);
-        let wreq_client = crate::curl::get_client().build().unwrap();
+        let wreq_client = get_client().build().unwrap();
         let response = match wreq_client.get(url).send().await {
             Ok(r) => r,
             Err(e) => {
@@ -149,7 +149,7 @@ async fn handler(client: Client, message: Arc<Message>) {
     }
 }
 
-#[crate::on_update]
+#[jbot_core::on_update]
 async fn callback_handler(client: Client, update: Update, _session: Arc<SqliteSession>) {
     match update {
         Update::CallbackQuery(callback) => {
@@ -213,7 +213,7 @@ async fn send_bili(
         .await?;
     let mid = Arc::new(mid);
 
-    let wreq_client = crate::curl::get_client().build()?;
+    let wreq_client = get_client().build()?;
     let referer = format!("https://www.bilibili.com/video/{}/", bvid);
     let headers = vec![("referer", referer)];
 
@@ -413,7 +413,7 @@ async fn send_bili(
                             if url.contains("mcdn.bilivideo") {
                                 continue;
                             }
-                            
+
                             let u = Url::parse(url).unwrap();
                             info!("CDN: {}", u.host().unwrap());
                             url
@@ -454,7 +454,7 @@ async fn send_bili(
                             warn!("{prefix} i={i} 下载失败: {e}");
                         }
                     }
-                    
+
                     i += 1;
                 };
 
@@ -475,7 +475,7 @@ async fn send_bili(
                                     if url.contains("mcdn.bilivideo") {
                                         continue;
                                     }
-                                    
+
                                     let u = Url::parse(url).unwrap();
                                     info!("CDN: {}", u.host().unwrap());
                                     url
@@ -684,7 +684,7 @@ where
 pub struct GetBiliPageButton;
 
 impl GetBiliPageButton {
-    const ID: [u8; 4] = crate::id!("get_bili_page");
+    const ID: [u8; 4] = id!("get_bili_page");
 
     pub fn new(aid: u64, p: u16) -> Button {
         let mut data = Vec::with_capacity(14);

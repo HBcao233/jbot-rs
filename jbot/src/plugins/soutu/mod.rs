@@ -4,10 +4,12 @@ use std::sync::Arc;
 
 use grammers_client::Client;
 use grammers_client::media::Media;
-use grammers_client::message::{Button, InputMessage, ReplyMarkup};
+use grammers_client::message::{Button, InputMessage, Message, ReplyMarkup};
 use grammers_client::update::{CallbackQuery, Update};
 use grammers_session::storages::SqliteSession;
+use jbot_core::cache_dir;
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
+use tokio::fs;
 use tracing::error;
 
 pub use self::buttons::SoutuButton;
@@ -25,7 +27,13 @@ const CUSTOM_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'/')
     .remove(b':');
 
-#[crate::on_update]
+#[jbot_core::on_grouped_buttons]
+fn on_grouped(messages: &[Arc<Message>]) -> Vec<Button> {
+    let message = messages.first().unwrap();
+    vec![SoutuButton::new(message.id())]
+}
+
+#[jbot_core::on_update]
 async fn callback_handler(client: Client, update: Update, _session: Arc<SqliteSession>) {
     match update {
         Update::CallbackQuery(callback) => {
@@ -71,9 +79,9 @@ async fn handle_soutu(callback: CallbackQuery, client: Client, message_id: i32) 
                             return;
                         }
                     };
-                    let path = crate::cache_dir().join(filename);
+                    let path = cache_dir().join(filename);
 
-                    let exist = if tokio::fs::metadata(&path).await.is_ok() {
+                    let exist = if fs::metadata(&path).await.is_ok() {
                         true
                     } else {
                         match client.download_media(&media, &path).await {

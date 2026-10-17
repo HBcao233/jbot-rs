@@ -10,7 +10,7 @@ const HELP: &str = "用法: /roll [最小点数 最大点数]
 最小点数最小值: -32768
 最大点数最大值: 32767";
 
-#[crate::on_new_message]
+#[jbot_core::on_new_message]
 async fn handler(_client: Client, message: Arc<Message>) {
     if message.outgoing() {
         return;

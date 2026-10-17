@@ -8,8 +8,8 @@ use grammers_session::storages::SqliteSession;
 use grammers_session::types::{PeerId, PeerKind};
 use tracing::{error, info};
 
-use crate::database::{get_config, set_config};
-use crate::id;
+use jbot_core::database::{get_config, set_config};
+use jbot_core::id;
 
 const ENABLED_VALUE: &str = "1";
 const ENABLED_PREFIX: &str = "✅ ";
@@ -59,7 +59,7 @@ impl Config {
     }
 }
 
-#[crate::on_new_message]
+#[jbot_core::on_new_message]
 async fn handler(client: Client, message: Arc<Message>) {
     if message.outgoing() {
         return;
@@ -96,7 +96,7 @@ async fn handler(client: Client, message: Arc<Message>) {
     }
 }
 
-#[crate::on_update]
+#[jbot_core::on_update]
 async fn callback_handler(client: Client, update: Update, session: Arc<SqliteSession>) {
     match update {
         Update::CallbackQuery(callback) => {

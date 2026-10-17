@@ -16,8 +16,10 @@ use regex::regex;
 use tracing::{error, info, warn};
 
 use self::data_source::{get_tweet, parse_msg};
-use crate::curl::stream_download;
-use crate::database as db;
+use jbot_core::curl::{get_client, stream_download};
+use jbot_core::database as db;
+use jbot_core::ffmpeg;
+use jbot_core::id;
 
 const HELP: &'static str = r#"推特解析，支持批量解析多条链接。
 用法: /tid <url/tid> [url2 url3...]"#;
@@ -25,7 +27,7 @@ const HELP: &'static str = r#"推特解析，支持批量解析多条链接。
 static CSRF_TOKEN: OnceLock<String> = OnceLock::new();
 static AUTH_TOKEN: OnceLock<String> = OnceLock::new();
 
-#[crate::on_setup]
+#[jbot_core::on_setup]
 fn setup() -> anyhow::Result<()> {
     let csrf_token = env::var("twitter_csrf_token")
         .context("environment variable \"twitter_csrf_token\" not found")?;
@@ -36,7 +38,7 @@ fn setup() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[crate::on_new_message]
+#[jbot_core::on_new_message]
 async fn handler(client: Client, message: Arc<Message>) {
     if message.outgoing() {
         return;
@@ -93,7 +95,7 @@ async fn handler(client: Client, message: Arc<Message>) {
     }
 }
 
-#[crate::on_update]
+#[jbot_core::on_update]
 async fn callback_handler(client: Client, update: Update, _session: Arc<SqliteSession>) {
     match update {
         Update::CallbackQuery(callback) => {
@@ -123,7 +125,7 @@ async fn send_twitter(
         )
         .await?;
 
-    let wreq_client = crate::curl::get_client().build()?;
+    let wreq_client = get_client().build()?;
     let tweet = match get_tweet(&wreq_client, &tid).await {
         Ok(tweet) => tweet,
         Err(e) => {
@@ -241,7 +243,7 @@ async fn send_twitter(
                         let duration = if let Some(millis) = duration_millis {
                             millis as f64 / 1000.0
                         } else {
-                            match crate::ffmpeg::get_duration(&path).await {
+                            match ffmpeg::get_duration(&path).await {
                                 Ok(d) => d,
                                 Err(e) => {
                                     warn!("获取视频 ({}) 时长失败: {e}", path.display());
@@ -349,7 +351,7 @@ pub struct GetOriginalButton {
 }
 
 impl GetOriginalButton {
-    const ID: [u8; 4] = crate::id!("twitter_get_original");
+    const ID: [u8; 4] = id!("twitter_get_original");
 
     pub fn new(tid: u64) -> Self {
         let mut data = Vec::new();
@@ -394,7 +396,7 @@ async fn send_original(client: Client, callback: CallbackQuery, tid: u64) {
         }
     };
 
-    let wreq_client = crate::curl::get_client().build().unwrap();
+    let wreq_client = get_client().build().unwrap();
     let tweet = match get_tweet(&wreq_client, &tid.to_string()).await {
         Ok(tweet) => tweet,
         Err(e) => {

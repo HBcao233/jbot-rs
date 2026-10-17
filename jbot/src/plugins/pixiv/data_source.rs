@@ -3,6 +3,7 @@ use std::process::ExitStatus;
 
 use jb_core::pixiv::types::{Frame, PixivDetails, PixivError, UgoiraMeta};
 use jb_core::pixiv::{fetch_info, fetch_ugoira_meta};
+use jbot_core::cache_dir;
 use regex::regex;
 use tokio::fs;
 use tokio::io::{self, AsyncWriteExt};
@@ -13,7 +14,7 @@ use wreq::Client;
 const MAX_COMMENT_LENGTH: usize = 600;
 
 pub(super) async fn get_info(client: &Client, pid: &str) -> Result<PixivDetails, PixivError> {
-    let cache_dir = crate::cache_dir().join("pixiv");
+    let cache_dir = cache_dir().join("pixiv");
     if let Err(e) = fs::create_dir_all(&cache_dir).await {
         error!("缓存文件夹创建失败: {e:?}");
         return Err(PixivError::Io(e));
@@ -120,7 +121,7 @@ fn truncate_comment(comment: &str, max_comment_length: usize) -> String {
 }
 
 pub async fn get_ugoira_meta(client: &Client, pid: &str) -> Result<UgoiraMeta, PixivError> {
-    let cache_dir = crate::cache_dir().join("pixiv");
+    let cache_dir = cache_dir().join("pixiv");
     if let Err(e) = fs::create_dir_all(&cache_dir).await {
         error!("缓存文件夹创建失败: {e:?}");
         return Err(PixivError::Io(e));

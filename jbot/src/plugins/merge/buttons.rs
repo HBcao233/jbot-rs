@@ -1,9 +1,10 @@
 use grammers_client::message::Button;
+use jbot_core::id;
 
 pub struct AddMergeButton;
 
 impl AddMergeButton {
-    const ID: [u8; 4] = crate::id!("add_merge");
+    const ID: [u8; 4] = id!("add_merge");
 
     pub fn new(message_ids: &[i32]) -> Button {
         if message_ids.len() > 10 {
@@ -37,7 +38,7 @@ impl AddMergeButton {
 pub struct DirectMergeButton;
 
 impl DirectMergeButton {
-    const ID: [u8; 4] = crate::id!("direct_merge");
+    const ID: [u8; 4] = id!("direct_merge");
 
     pub fn new(message_ids: &[i32]) -> Button {
         if message_ids.len() > 10 {
@@ -71,7 +72,7 @@ impl DirectMergeButton {
 pub struct FinishMergeButton;
 
 impl FinishMergeButton {
-    const ID: [u8; 4] = crate::id!("finish_merge");
+    const ID: [u8; 4] = id!("finish_merge");
 
     pub fn new() -> Button {
         Button::data("完成合并", Self::ID)

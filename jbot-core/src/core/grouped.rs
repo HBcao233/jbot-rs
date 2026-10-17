@@ -19,6 +19,11 @@ fn peer_grouped_medias() -> &'static Mutex<PeerGroupedMedias> {
     PEER_GROUPED_MEDIAS.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
+type Handler = fn(messages: &[Arc<Message>]) -> Vec<Button>;
+
+#[linkme::distributed_slice]
+pub static GROUPED_HANDLERS: [Handler];
+
 async fn grouped_messages_handler(client: Client, messages: Vec<Arc<Message>>) {
     let message = messages.first().unwrap();
     if message.outgoing() {
@@ -36,38 +41,16 @@ async fn grouped_messages_handler(client: Client, messages: Vec<Arc<Message>>) {
         .unwrap_or_else(|| peer_id.to_ambient_ref());
 
     let text = format!("收到 {} 条媒体", messages.len());
-    let message_ids: Vec<i32> = messages.iter().map(|m| m.id()).collect();
-    #[allow(unused_variables)]
-    let media = message.media().unwrap();
 
-    #[allow(unused_mut)]
+    let message_ids: Vec<i32> = messages.iter().map(|m| m.id()).collect();
+
     let mut buttons: Vec<Vec<Button>> = Vec::new();
 
-    #[cfg(feature = "spoiler")]
-    {
-        use grammers_client::media::Media;
-
-        let spoilered = match media {
-            Media::Photo(p) => p.is_spoiler(),
-            Media::Document(d) => d.is_spoiler(),
-            _ => false,
-        };
-        buttons.push(vec![crate::plugins::spoiler::SwitchSpoilerButton::new(
-            false,
-            spoilered,
-            &message_ids,
-        )]);
-    }
-
-    #[cfg(feature = "merge")]
-    buttons.push(vec![
-        crate::plugins::merge::AddMergeButton::new(&message_ids),
-        crate::plugins::merge::DirectMergeButton::new(&message_ids),
-    ]);
-
-    #[cfg(feature = "soutu")]
-    {
-        buttons.push(vec![crate::plugins::soutu::SoutuButton::new(message.id())]);
+    for handler in GROUPED_HANDLERS {
+        let btns = handler(&messages);
+        if !btns.is_empty() {
+            buttons.push(btns);
+        }
     }
 
     if buttons.is_empty() {

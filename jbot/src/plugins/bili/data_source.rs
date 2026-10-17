@@ -2,16 +2,14 @@ use std::path::Path;
 
 use jb_core::bili::types::{BiliError, BiliInfo, Page, PlayurlInfo};
 use jb_core::bili::{fetch_bili_info, fetch_playurl, parse_desc};
+use jbot_core::cache_dir;
+use jbot_core::utils::safe_truncate;
 use tokio::fs;
 use tracing::error;
 use wreq::Client;
 
-pub async fn get_bili(
-    client: &Client,
-    aid: u64,
-    bvid: &str,
-) -> Result<BiliInfo, BiliError> {
-    let cache_dir = crate::cache_dir().join("bilis");
+pub async fn get_bili(client: &Client, aid: u64, bvid: &str) -> Result<BiliInfo, BiliError> {
+    let cache_dir = cache_dir().join("bilis");
     if let Err(e) = fs::create_dir_all(&cache_dir).await {
         error!("缓存文件夹创建失败: {e:?}");
         return Err(BiliError::Io(e));
@@ -59,7 +57,7 @@ pub fn parse_msg(info: BiliInfo, p: u16) -> Result<(String, Page, String), ()> {
         desc.clear();
     }
     if !desc.is_empty() {
-        desc = crate::utils::safe_truncate(&desc, 900);
+        desc = safe_truncate(&desc, 900);
         desc = format!(":\n<blockquote expandable>{desc}</blockquote>");
     }
 

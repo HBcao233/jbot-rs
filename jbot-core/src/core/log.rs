@@ -22,7 +22,7 @@ impl FormatTime for Timer {
 }
 
 pub fn init_log() -> Result<WorkerGuard, Box<dyn std::error::Error + Send + Sync>> {
-    let appender = tracing_appender::rolling::daily("logs", "jbot.log");
+    let appender = tracing_appender::rolling::daily(crate::current_dir().join("logs"), "jbot.log");
     let (non_blocking, guard) = tracing_appender::non_blocking(appender);
 
     tracing_subscriber::fmt()

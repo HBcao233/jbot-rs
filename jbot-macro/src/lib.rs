@@ -22,7 +22,7 @@ pub fn on_setup(_args: TokenStream, item: TokenStream) -> TokenStream {
 
     quote! {
         #(#attrs)*
-        #[::linkme::distributed_slice(crate::core::update::SETUPS)]
+        #[::linkme::distributed_slice(::jbot_core::core::update::SETUPS)]
         #vis #sig {
             #block
         }
@@ -47,11 +47,11 @@ pub fn on_interval(_args: TokenStream, item: TokenStream) -> TokenStream {
     }
 
     sig.asyncness = None;
-    sig.output = parse_quote!(-> crate::core::update::HandlerResult);
+    sig.output = parse_quote!(-> ::jbot_core::core::update::HandlerResult);
 
     quote! {
         #(#attrs)*
-        #[::linkme::distributed_slice(crate::core::update::INTERVAL_HANDLERS)]
+        #[::linkme::distributed_slice(::jbot_core::core::update::INTERVAL_HANDLERS)]
         #vis #sig {
             Box::pin(async move #block)
         }
@@ -76,11 +76,11 @@ pub fn on_update(_args: TokenStream, item: TokenStream) -> TokenStream {
     }
 
     sig.asyncness = None;
-    sig.output = parse_quote!(-> crate::core::update::HandlerResult);
+    sig.output = parse_quote!(-> ::jbot_core::core::update::HandlerResult);
 
     quote! {
         #(#attrs)*
-        #[::linkme::distributed_slice(crate::core::update::HANDLERS)]
+        #[::linkme::distributed_slice(::jbot_core::core::update::HANDLERS)]
         #vis #sig {
             Box::pin(async move #block)
         }
@@ -108,13 +108,42 @@ pub fn on_new_message(_args: TokenStream, item: TokenStream) -> TokenStream {
     }
 
     sig.asyncness = None;
-    sig.output = parse_quote!(-> crate::core::update::HandlerResult);
+    sig.output = parse_quote!(-> ::jbot_core::core::update::HandlerResult);
 
     quote! {
         #(#attrs)*
-        #[::linkme::distributed_slice(crate::core::update::NEW_MESSAGE_HANDLERS)]
+        #[::linkme::distributed_slice(::jbot_core::core::update::NEW_MESSAGE_HANDLERS)]
         #vis #sig {
             Box::pin(async move #block)
+        }
+    }
+    .into()
+}
+
+#[proc_macro_attribute]
+pub fn on_grouped_buttons(_args: TokenStream, item: TokenStream) -> TokenStream {
+    let ItemFn {
+        attrs,
+        vis,
+        sig,
+        block,
+        modifiers: _,
+    } = parse_macro_input!(item as ItemFn);
+
+    if sig.asyncness.is_some() {
+        return syn::Error::new_spanned(
+            &sig.fn_token,
+            "#[on_grouped_buttons] cannot be used to `async fn`",
+        )
+        .to_compile_error()
+        .into();
+    }
+
+    quote! {
+        #(#attrs)*
+        #[::linkme::distributed_slice(::jbot_core::core::grouped::GROUPED_HANDLERS)]
+        #vis #sig {
+            #block
         }
     }
     .into()
