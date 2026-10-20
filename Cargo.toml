@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "jbot",
+    "jbot-core",
+    "jbot-macro",
+]
+resolver = "2"

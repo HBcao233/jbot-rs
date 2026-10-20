@@ -1,0 +1,720 @@
+mod data_source;
+
+use std::borrow::Cow;
+use std::collections::HashMap;
+use std::env;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
+
+use grammers_client::Client;
+use grammers_client::message::{Button, InputMessage, Message, ReplyMarkup};
+use grammers_client::update::Update;
+use grammers_session::storages::SqliteSession;
+use grammers_session::types::{PeerId, PeerKind, PeerRef};
+use grammers_tl_types as tl;
+use jb_core::bili::types::{BiliError, BiliId, DurlInfo, GaiaValidateData, Geetest, VgateData};
+use jb_core::bili::{get_gaia, validate_gaia};
+use regex::regex;
+use tokio::fs;
+use tokio::sync::{Mutex, oneshot};
+use tracing::{error, info, warn};
+use url::Url;
+
+use self::data_source::{get_bili, get_playurl, parse_msg};
+use jbot_core::curl::{get_client, stream_download, stream_download_with_callback};
+use jbot_core::database as db;
+use jbot_core::progress::{Progress, ProgressScheduler, ProgressStyle};
+use jbot_core::utils::upload_file_with_callback;
+use jbot_core::{FFmpeg, id};
+
+const HELP: &str = "Bilibili 解析。用法: /bili <url>";
+
+static SESSDATA: OnceLock<Option<String>> = OnceLock::new();
+
+type Gaia = Arc<Mutex<HashMap<PeerId, oneshot::Sender<(String, String)>>>>;
+static GAIA: OnceLock<Gaia> = OnceLock::new();
+
+#[jbot_core::on_setup]
+fn setup() -> anyhow::Result<()> {
+    let sessdata = env::var("bili_SESSDATA").ok();
+    if sessdata.is_none() {
+        warn!("未提供 bili_SESSDATA, 可能会解析失败或画质受限");
+    }
+    let _ = SESSDATA.set(sessdata);
+    Ok(())
+}
+
+fn gaia() -> Gaia {
+    Arc::clone(GAIA.get_or_init(|| Arc::new(Mutex::new(HashMap::new()))))
+}
+
+#[jbot_core::on_new_message]
+async fn handler(client: Client, message: Arc<Message>) {
+    if message.outgoing() {
+        return;
+    }
+
+    let peer_id = message.peer_id();
+    if peer_id.kind() != PeerKind::User {
+        return;
+    }
+
+    let peer_ref = message
+        .peer_ref()
+        .await
+        .ok()
+        .and_then(|x| x)
+        .unwrap_or_else(|| peer_id.to_ambient_ref());
+
+    let re =
+        regex!(r"(?:(?:https?://)?bilibili\.com/video/)?(av\d{2,16}|(?:BV|bv)[0-9a-zA-Z]{8,12})");
+    let b23_re = regex!(r"(?:https?://)?b23\.tv\\?/([0-9a-zA-Z]{7,7})");
+
+    let msg_id = message.id();
+    let mut text = message.text().to_string();
+    // info!("text: {text}");
+    if text.starts_with("validate=") {
+        if let Some(tx) = gaia().lock().await.remove(&peer_id) {
+            let arr: Vec<_> = text.split('&').collect();
+            let [mut validate, mut seccode] = arr[..2] else {
+                let _ = message.reply("结果格式不正确").await;
+                return;
+            };
+            validate = validate.split('=').last().unwrap();
+            seccode = seccode.split('=').last().unwrap();
+            info!("validate: {}, seccode: {}", validate, seccode);
+            let _ = tx.send((validate.to_string(), seccode.to_string()));
+        } else {
+            let _ = message.reply("验证已过期").await;
+        }
+        return;
+    }
+
+    let starts_with_bili = text.starts_with("/bili");
+
+    if let Some(caps) = b23_re.captures(&text) {
+        let (_, [b23_id]) = caps.extract();
+        info!("b23.tv: {b23_id}");
+        let url = format!("https://b23.tv/{}", b23_id);
+        let wreq_client = get_client().build().unwrap();
+        let response = match wreq_client.get(url).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                error!("b23.tv请求失败: {e}");
+                if let Err(e) = message.reply("短链解析失败").await {
+                    error!("消息发送失败: {e}");
+                }
+                return;
+            }
+        };
+        if let Some(location) = response
+            .headers()
+            .get("location")
+            .and_then(|l| l.to_str().ok())
+        {
+            text = location.to_string();
+        } else {
+            if let Err(e) = message.reply("短链解析失败").await {
+                error!("消息发送失败: {e}");
+            }
+            return;
+        }
+    }
+
+    let mut matched = false;
+    if let Some(caps) = re.captures(&text) {
+        let (_, [id]) = caps.extract();
+        info!("input: {id}");
+        let bili_id = if id.starts_with('a') {
+            let id = id.strip_prefix("av").unwrap();
+            BiliId::AV(id.parse().unwrap())
+        } else {
+            BiliId::BV(id.to_string())
+        };
+
+        matched = true;
+        let Some((aid, bvid)) = bili_id.to_raw() else {
+            let _ = message.reply("avid/bvid 解析错误").await;
+            return;
+        };
+        if let Err(e) = send_bili(client.clone(), peer_ref, Some(msg_id), aid, bvid, None).await {
+            error!("发送bili失败: {e:?}");
+        }
+    }
+
+    if !matched && starts_with_bili {
+        if let Err(e) = message.reply(HELP).await {
+            error!("消息发送失败: {e}")
+        }
+    }
+}
+
+#[jbot_core::on_update]
+async fn callback_handler(client: Client, update: Update, _session: Arc<SqliteSession>) {
+    match update {
+        Update::CallbackQuery(callback) => {
+            let data = callback.data();
+            let peer_id = callback.peer_id();
+            let peer_ref = callback
+                .peer_ref()
+                .await
+                .unwrap_or_default()
+                .unwrap_or(peer_id.to_ambient_ref());
+            let msg_id = match &callback.raw {
+                tl::enums::Update::BotCallbackQuery(update) => Some(update.msg_id),
+                _ => None,
+            };
+
+            if let Some((aid, p)) = GetBiliPageButton::from_data(data) {
+                let bili_id = BiliId::AV(aid);
+                let Some((aid, bvid)) = bili_id.to_raw() else {
+                    error!(?aid, "aid 解析错误");
+                    let _ = callback.answer().alert("aid 解析错误").send().await;
+                    return;
+                };
+                let _ = callback.answer().send().await;
+
+                if let Err(e) =
+                    send_bili(client.clone(), peer_ref, msg_id, aid, bvid, Some(p)).await
+                {
+                    error!("发送bili失败: {e:?}");
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+async fn send_bili(
+    client: Client,
+    peer_ref: PeerRef,
+    msg_id: Option<i32>,
+    aid: u64,
+    bvid: String,
+    p: Option<u16>,
+) -> anyhow::Result<()> {
+    info!(aid, bvid, ?p, "send_bili");
+
+    let prefix = format!(
+        "[{bvid}{}]",
+        if let Some(some_p) = p {
+            format!(" P{}", some_p)
+        } else {
+            String::new()
+        }
+    );
+    let mid = client
+        .send_message(
+            peer_ref,
+            InputMessage::new()
+                .text(format!("{prefix} 请等待..."))
+                .reply_to(msg_id),
+        )
+        .await?;
+    let mid = Arc::new(mid);
+
+    let wreq_client = get_client().build()?;
+    let referer = format!("https://www.bilibili.com/video/{}/", bvid);
+    let headers = vec![("referer", referer)];
+
+    let info = match get_bili(&wreq_client, aid, &bvid).await {
+        Ok(info) => info,
+        Err(e) => {
+            client
+                .send_message(
+                    peer_ref,
+                    InputMessage::new().text(e.to_string()).reply_to(msg_id),
+                )
+                .await?;
+            return Ok(());
+        }
+    };
+
+    // 分P选择
+    if info.pages.len() > 2 && p.is_none() {
+        let len = info.pages.len() as u16;
+        let buttons: Vec<Button> = (1..=len).map(|p| GetBiliPageButton::new(aid, p)).collect();
+        let buttons = group_buttons(buttons);
+        let reply_markup = ReplyMarkup::from_buttons(&buttons);
+        mid.edit(
+            InputMessage::new()
+                .text("检测到分P视频，请选择分集:")
+                .reply_markup(reply_markup),
+        )
+        .await?;
+        return Ok(());
+    }
+
+    let Ok((msg, page, pic)) = parse_msg(info, p.unwrap_or(1)) else {
+        let _ = mid.edit("视频分P 不存在").await;
+        return Ok(());
+    };
+    let cid = page.cid;
+    let duration: f64 = page.duration.into();
+    let w: i32 = page.dimension.width.into();
+    let h: i32 = page.dimension.height.into();
+    let first_frame = page.first_frame;
+
+    let key = format!("{bvid}_{cid}");
+
+    let input_media: Option<tl::enums::InputMedia> = if let Some(media) =
+        db::get_media(&key).await?
+    {
+        info!("使用已发送过的媒体: {key}");
+        Some(media)
+    } else {
+        let playurl = match get_playurl(&wreq_client, aid, &bvid, cid, None).await {
+            Ok(p) => p,
+            Err(e) => match e {
+                BiliError::Voucher(v_voucher) => match get_gaia(&wreq_client, v_voucher).await {
+                    Ok(VgateData {
+                        r#type: _,
+                        token,
+                        geetest: Geetest { challenge, gt },
+                    }) => {
+                        let _ = mid.delete().await;
+                        let url = format!(
+                            "https://hbcao233.github.io/geetest-validator/?challenge={challenge}&gt={gt}"
+                        );
+                        let reply_markup =
+                            ReplyMarkup::from_buttons_row(&[Button::url("人机验证", url)]);
+                        client.send_message(peer_ref, InputMessage::new().text("请打开下面链接进行 Bilibili 的人机验证，将验证结果发送给小派魔").reply_to(msg_id).reply_markup(reply_markup)).await?;
+                        let (tx, rx) = oneshot::channel();
+                        {
+                            let g = gaia();
+                            let mut guard = g.lock().await;
+                            guard.insert(peer_ref.id, tx);
+                        }
+
+                        let (validate, seccode) = rx.await?;
+                        let GaiaValidateData { grisk_id, .. } =
+                            match validate_gaia(&wreq_client, token, challenge, validate, seccode)
+                                .await
+                            {
+                                Ok(g) => g,
+                                Err(e) => {
+                                    client
+                                        .send_message(
+                                            peer_ref,
+                                            InputMessage::new()
+                                                .text(e.to_string())
+                                                .reply_to(msg_id),
+                                        )
+                                        .await?;
+                                    return Ok(());
+                                }
+                            };
+                        info!("grisk_id: {grisk_id}");
+
+                        match get_playurl(&wreq_client, aid, &bvid, cid, Some(&grisk_id)).await {
+                            Ok(p) => p,
+                            Err(e) => {
+                                client
+                                    .send_message(
+                                        peer_ref,
+                                        InputMessage::new().text(e.to_string()).reply_to(msg_id),
+                                    )
+                                    .await?;
+                                return Ok(());
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        if let Err(e) = mid.edit(e.to_string()).await {
+                            error!("消息发送失败: {e}");
+                        }
+                        return Ok(());
+                    }
+                },
+                _ => {
+                    if let Err(e) = mid.edit(e.to_string()).await {
+                        error!("消息发送失败: {e}");
+                    }
+                    return Ok(());
+                }
+            },
+        };
+
+        let thumb_name = format!("{key}_thumb.jpg");
+        let thumb = match stream_download(&wreq_client, &first_frame, &thumb_name, &headers).await {
+            Ok(path) => match client.upload_file(path).await {
+                Ok(uploaded) => Some(uploaded.raw),
+                Err(e) => {
+                    warn!("上传 {thumb_name} 失败: {e}");
+                    None
+                }
+            },
+            Err(e) => {
+                warn!("下载 {thumb_name} 失败: {e}");
+                None
+            }
+        };
+
+        let bar = ProgressScheduler::new(Progress::new(Arc::clone(&mid)));
+
+        let mut videos = Vec::new();
+        let mut audios = Vec::new();
+        let re = regex!(r"https://[^/]*akamaized\.net");
+        const HW_CDN: &str = "https://upos-sz-mirrorcos.bilivideo.com";
+
+        if let Some(ref dash) = playurl.dash {
+            for v in dash.video.iter() {
+                if v.mime_type == "video/mp4" && v.codecid == 7 {
+                    let mut urls = Vec::with_capacity(1 + v.backup_url.len());
+                    urls.push(re.replace(&v.base_url, HW_CDN));
+                    urls.extend(v.backup_url.iter().map(|u| re.replace(u, HW_CDN)));
+                    videos.push(Video { id: v.id, urls });
+                }
+            }
+
+            if let Some(ref audio) = dash.audio {
+                for v in audio.iter() {
+                    if v.mime_type == "audio/mp4" {
+                        let mut urls = Vec::with_capacity(1 + v.backup_url.len());
+                        urls.push(re.replace(&v.base_url, HW_CDN));
+                        urls.extend(v.backup_url.iter().map(|u| re.replace(u, HW_CDN)));
+                        audios.push(Audio { id: v.id, urls });
+                    }
+                }
+            }
+        }
+
+        if let Some(ref durl) = playurl.durl {
+            let DurlInfo {
+                url, backup_url, ..
+            } = durl.iter().next().unwrap();
+            let mut urls =
+                Vec::with_capacity(1 + backup_url.as_ref().map(|b| b.len()).unwrap_or(0));
+
+            urls.push(re.replace(url, HW_CDN));
+
+            if let Some(backup) = backup_url {
+                urls.extend(backup.iter().map(|u| re.replace(u, HW_CDN)));
+            }
+
+            videos.push(Video {
+                id: playurl.quality.unwrap(),
+                urls,
+            });
+        }
+
+        match videos.into_iter().max_by_key(|x| x.id) {
+            None => None,
+            Some(video) => {
+                info!("{prefix} 使用 video id: {}", video.id);
+
+                let video_name = format!("{key}_video.mp4");
+
+                let mut urls = video.urls.iter();
+                let mut i = 0;
+                let video_path = loop {
+                    let url = match urls.next() {
+                        Some(url) => {
+                            if url.contains("mcdn.bilivideo") {
+                                continue;
+                            }
+
+                            let u = Url::parse(url).unwrap();
+                            info!("CDN: {}", u.host().unwrap());
+                            url
+                        }
+                        None => {
+                            let tip = format!("{prefix} 所有下载尝试失败，请重试");
+                            mid.edit(tip).await?;
+                            return Ok(());
+                        }
+                    };
+
+                    let tip = format!(
+                        "{prefix} 下载视频中{}...",
+                        if i == 0 {
+                            String::new()
+                        } else {
+                            format!(" (重试 {i})")
+                        }
+                    );
+                    info!("{tip}");
+                    bar.style(ProgressStyle::Size);
+                    bar.prefix(&tip);
+                    mid.edit(tip).await?;
+
+                    match stream_download_with_callback(
+                        &wreq_client,
+                        url,
+                        &video_name,
+                        &headers,
+                        |downloaded, total| {
+                            bar.sync_update(downloaded, total);
+                        },
+                    )
+                    .await
+                    {
+                        Ok(path) => break path,
+                        Err(e) => {
+                            warn!("{prefix} i={i} 下载失败: {e}");
+                        }
+                    }
+
+                    i += 1;
+                };
+
+                let name = format!("{key}.mp4");
+
+                let path = match audios.into_iter().max_by_key(|x| x.id) {
+                    None => video_path,
+                    Some(audio) => {
+                        info!("使用 audio id: {}", audio.id);
+
+                        let audio_name = format!("{key}_audio.mp4");
+
+                        let mut urls = audio.urls.iter();
+                        let mut i = 0;
+                        let audio_path = loop {
+                            let url = match urls.next() {
+                                Some(url) => {
+                                    if url.contains("mcdn.bilivideo") {
+                                        continue;
+                                    }
+
+                                    let u = Url::parse(url).unwrap();
+                                    info!("CDN: {}", u.host().unwrap());
+                                    url
+                                }
+                                None => {
+                                    let tip = format!("{prefix} 所有下载尝试失败，请重试");
+                                    mid.edit(tip).await?;
+                                    return Ok(());
+                                }
+                            };
+
+                            let tip = format!(
+                                "{prefix} 下载视频中{}...",
+                                if i == 0 {
+                                    String::new()
+                                } else {
+                                    format!(" (重试 {i})")
+                                }
+                            );
+                            info!("{tip}");
+                            bar.style(ProgressStyle::Size);
+                            bar.prefix(&tip);
+                            mid.edit(tip).await?;
+
+                            match stream_download_with_callback(
+                                &wreq_client,
+                                &url,
+                                &audio_name,
+                                &headers,
+                                |downloaded, total| {
+                                    bar.sync_update(downloaded, total);
+                                },
+                            )
+                            .await
+                            {
+                                Ok(audio_path) => break audio_path,
+                                Err(e) => {
+                                    warn!("{prefix} i={i} 下载失败: {e}");
+                                }
+                            }
+
+                            i += 1;
+                        };
+
+                        let tip = format!("{prefix} 处理中...");
+                        info!("{tip}");
+                        bar.style(ProgressStyle::Time);
+                        bar.prefix(&tip);
+                        mid.edit(tip).await?;
+
+                        match merge_media(audio_path, video_path, &name, |current, total| {
+                            bar.sync_update(current, total);
+                        })
+                        .await
+                        {
+                            Ok(p) => p,
+                            Err(e) => {
+                                let tip = format!("{prefix} 视频处理失败");
+                                error!("{tip}: {e}");
+                                mid.edit(tip).await?;
+                                return Ok(());
+                            }
+                        }
+                    }
+                };
+
+                let tip = format!("{prefix} 上传中...");
+                info!("{tip}");
+                bar.style(ProgressStyle::Size);
+                bar.prefix(&tip);
+                mid.edit(tip).await?;
+                let Ok(uploaded) = upload_file_with_callback(&client, path, |uploaded, total| {
+                    bar.sync_update(uploaded, total);
+                })
+                .await
+                else {
+                    mid.edit(format!("{prefix} 上传失败")).await?;
+                    return Ok(());
+                };
+
+                Some(
+                    tl::types::InputMediaUploadedDocument {
+                        nosound_video: true,
+                        force_file: false,
+                        spoiler: false,
+                        file: uploaded.raw,
+                        thumb,
+                        mime_type: "video/mp4".to_string(),
+                        attributes: vec![
+                            tl::types::DocumentAttributeFilename { file_name: name }.into(),
+                            tl::types::DocumentAttributeVideo {
+                                round_message: false,
+                                supports_streaming: true,
+                                nosound: false,
+                                duration,
+                                w,
+                                h,
+                                preload_prefix_size: None,
+                                video_start_ts: None,
+                                video_codec: None,
+                            }
+                            .into(),
+                        ],
+                        stickers: None,
+                        ttl_seconds: None,
+                        video_cover: None,
+                        video_timestamp: None,
+                    }
+                    .into(),
+                )
+            }
+        }
+    };
+
+    let mut input_message = InputMessage::new().html(msg).reply_to(msg_id);
+    if let Some(m) = input_media {
+        input_message = input_message.media(m);
+    }
+    match client.send_message(peer_ref, input_message).await {
+        Ok(message) => match db::insert_from_message(&message, Some(&key)).await {
+            Ok(_) => {
+                info!("添加缓存视频: {key}");
+            }
+            Err(e) => {
+                error!("添加缓存视频 {key} 失败: {e}");
+            }
+        },
+        Err(e) => {
+            error!("消息发送失败: {e}");
+        }
+    };
+    let _ = mid.delete().await;
+
+    // 封面
+    let name = format!("{key}_pic.jpg");
+    let path = match stream_download(&wreq_client, &pic, &name, &headers).await {
+        Ok(path) => path,
+        Err(e) => {
+            error!("{prefix} 封面下载失败: {e}");
+            return Ok(());
+        }
+    };
+
+    let Ok(uploaded) = client.upload_file(path).await else {
+        error!("{prefix} 上传封面失败");
+        return Ok(());
+    };
+
+    client
+        .send_message(
+            peer_ref,
+            InputMessage::new().photo(uploaded).reply_to(msg_id),
+        )
+        .await?;
+
+    Ok(())
+}
+
+struct Video<'a> {
+    id: i32,
+    urls: Vec<Cow<'a, str>>,
+}
+
+struct Audio<'a> {
+    id: i32,
+    urls: Vec<Cow<'a, str>>,
+}
+
+pub async fn merge_media<F>(
+    audio_path: PathBuf,
+    video_path: PathBuf,
+    name: &str,
+    progress_callback: F,
+) -> anyhow::Result<PathBuf>
+where
+    F: Fn(usize, Option<usize>),
+{
+    let cache_dir = Path::new("cache");
+    if let Err(e) = fs::create_dir_all(cache_dir).await {
+        error!("缓存文件夹创建失败: {e:?}");
+    }
+
+    let path = cache_dir.join(name);
+    if path.is_file() {
+        return Ok(path);
+    }
+
+    let (status, stderr) = FFmpeg::new()
+        .arg("-i")
+        .arg(audio_path)
+        .arg("-i")
+        .arg(video_path)
+        .args(["-c:a", "copy", "-c:v", "copy", "-y"])
+        .arg(&path)
+        .run_with_progress(progress_callback)
+        .await?;
+
+    if !status.success() {
+        error!("合并媒体失败 ({:?}): {stderr}", status.code());
+        return Err(anyhow::anyhow!("convert failed"));
+    }
+
+    Ok(path)
+}
+
+pub struct GetBiliPageButton;
+
+impl GetBiliPageButton {
+    const ID: [u8; 4] = id!("get_bili_page");
+
+    pub fn new(aid: u64, p: u16) -> Button {
+        let mut data = Vec::with_capacity(14);
+        data.extend_from_slice(&Self::ID);
+        data.extend_from_slice(&aid.to_le_bytes());
+        data.extend_from_slice(&p.to_le_bytes());
+        Button::data(format!("P{p}"), data)
+    }
+
+    pub fn from_data(data: &[u8]) -> Option<(u64, u16)> {
+        if &data[..4] == &Self::ID {
+            let aid = u64::from_le_bytes(data[4..12].try_into().unwrap());
+            let p = u16::from_le_bytes(data[12..14].try_into().unwrap());
+            Some((aid, p))
+        } else {
+            None
+        }
+    }
+}
+
+fn group_buttons(buttons: Vec<Button>) -> Vec<Vec<Button>> {
+    let row_count = buttons.len().div_ceil(8);
+    let base = buttons.len() / row_count;
+    let extra = buttons.len() % row_count;
+
+    let mut iter = buttons.into_iter();
+    (0..row_count)
+        .map(|i| {
+            let count = base + usize::from(i < extra);
+            iter.by_ref().take(count).collect()
+        })
+        .collect()
+}
