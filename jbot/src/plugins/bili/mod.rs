@@ -14,6 +14,11 @@ use grammers_session::types::{PeerId, PeerKind, PeerRef};
 use grammers_tl_types as tl;
 use jb_core::bili::types::{BiliError, BiliId, DurlInfo, GaiaValidateData, Geetest, VgateData};
 use jb_core::bili::{get_gaia, validate_gaia};
+use jbot_core::curl::{get_client, stream_download, stream_download_with_callback};
+use jbot_core::database as db;
+use jbot_core::progress::{Progress, ProgressScheduler, ProgressStyle};
+use jbot_core::utils::upload_file_with_callback;
+use jbot_core::{FFmpeg, id};
 use regex::regex;
 use tokio::fs;
 use tokio::sync::{Mutex, oneshot};
@@ -21,11 +26,6 @@ use tracing::{error, info, warn};
 use url::Url;
 
 use self::data_source::{get_bili, get_playurl, parse_msg};
-use jbot_core::curl::{get_client, stream_download, stream_download_with_callback};
-use jbot_core::database as db;
-use jbot_core::progress::{Progress, ProgressScheduler, ProgressStyle};
-use jbot_core::utils::upload_file_with_callback;
-use jbot_core::{FFmpeg, id};
 
 const HELP: &str = "Bilibili 解析。用法: /bili <url>";
 

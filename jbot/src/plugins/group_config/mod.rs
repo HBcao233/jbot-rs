@@ -6,10 +6,9 @@ use grammers_client::update::{CallbackQuery, Update};
 use grammers_session::Session;
 use grammers_session::storages::SqliteSession;
 use grammers_session::types::{PeerId, PeerKind};
-use tracing::{error, info};
-
 use jbot_core::database::{get_config, set_config};
 use jbot_core::id;
+use tracing::{error, info};
 
 const ENABLED_VALUE: &str = "1";
 const ENABLED_PREFIX: &str = "✅ ";

@@ -12,14 +12,14 @@ use grammers_client::update::{CallbackQuery, Update};
 use grammers_session::storages::SqliteSession;
 use grammers_session::types::{PeerKind, PeerRef};
 use grammers_tl_types as tl;
-use regex::regex;
-use tracing::{error, info, warn};
-
-use self::data_source::{get_tweet, parse_msg};
 use jbot_core::curl::{get_client, stream_download};
 use jbot_core::database as db;
 use jbot_core::ffmpeg;
 use jbot_core::id;
+use regex::regex;
+use tracing::{error, info, warn};
+
+use self::data_source::{get_tweet, parse_msg};
 
 const HELP: &'static str = r#"推特解析，支持批量解析多条链接。
 用法: /tid <url/tid> [url2 url3...]"#;

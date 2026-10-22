@@ -9,15 +9,15 @@ use grammers_client::media::InputMedia;
 use grammers_client::message::{InputMessage, Message};
 use grammers_session::types::{PeerKind, PeerRef};
 use grammers_tl_types as tl;
+use jbot_core::curl::{get_client, stream_download, stream_download_with_callback};
+use jbot_core::database as db;
+use jbot_core::progress::{Progress, ProgressScheduler, ProgressStyle};
+use jbot_core::utils::upload_file_with_callback;
 use regex::regex;
 use tracing::{error, info, warn};
 use wreq::redirect::Policy;
 
 use self::data_source::{get_aweme_detail, parse_msg};
-use jbot_core::curl::{get_client, stream_download, stream_download_with_callback};
-use jbot_core::database as db;
-use jbot_core::progress::{Progress, ProgressScheduler, ProgressStyle};
-use jbot_core::utils::upload_file_with_callback;
 
 const HELP: &str = "Bilibili 解析。用法: /bili <url>";
 

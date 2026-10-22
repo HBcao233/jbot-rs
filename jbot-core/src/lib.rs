@@ -12,7 +12,6 @@ use std::time::{Duration, Instant};
 use grammers_client::Client;
 use grammers_client::sender::{SenderPool, UpdatesConfiguration};
 use grammers_session::storages::SqliteSession;
-
 use tokio::task::JoinSet;
 use tokio::time::{MissedTickBehavior, interval};
 use tracing::{error, info};
