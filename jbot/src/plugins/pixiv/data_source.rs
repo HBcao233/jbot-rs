@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::process::ExitStatus;
+use std::process::{ExitStatus, Stdio};
 
 use jb_core::pixiv::types::{Frame, PixivDetails, PixivError, UgoiraMeta};
 use jb_core::pixiv::{fetch_info, fetch_ugoira_meta};
@@ -76,7 +76,7 @@ pub fn parse_msg(info: &PixivDetails) -> String {
     let pid = &info.illust_details.id;
     let title = &info.illust_details.title;
     let uid = &info.illust_details.user_id;
-    let username = &info.author_details.user_account;
+    let username = &info.author_details.user_name;
 
     let comment = info
         .illust_details
@@ -144,6 +144,7 @@ pub async fn unzip_ugoira(input: &PathBuf, output: &PathBuf) -> io::Result<ExitS
             .arg("-d")
             .arg(output)
             .arg(input)
+            .stdout(Stdio::null())
             .kill_on_drop(true)
             .spawn()?,
         Some("tar") | Some("gz") => Command::new("unzip")
@@ -151,6 +152,7 @@ pub async fn unzip_ugoira(input: &PathBuf, output: &PathBuf) -> io::Result<ExitS
             .arg("-C")
             .arg(output)
             .arg(input)
+            .stdout(Stdio::null())
             .kill_on_drop(true)
             .spawn()?,
         _ => {
