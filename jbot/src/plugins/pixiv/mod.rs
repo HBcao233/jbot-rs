@@ -10,6 +10,8 @@ use grammers_client::message::{InputMessage, Message};
 use grammers_session::types::{PeerKind, PeerRef};
 use grammers_tl_types as tl;
 use jb_core::pixiv::types::{ImageResolution, Manga, UgoiraMeta};
+use jbot_core::curl::{get_client, stream_download};
+use jbot_core::database as db;
 use jbot_core::{FFmpeg, cache_dir};
 use regex::regex;
 use tokio::{fs, io};
@@ -18,8 +20,6 @@ use tracing::{error, info, warn};
 use self::data_source::{
     create_ugoira_frames_txt, get_info, get_ugoira_meta, parse_msg, unzip_ugoira,
 };
-use jbot_core::curl::{get_client, stream_download};
-use jbot_core::database as db;
 
 const HELP: &str = "Pixiv 解析。用法: /pixiv <url/pid>";
 
@@ -165,7 +165,7 @@ async fn send_pixiv(
             };
             if !exist {
                 if let Err(e) = fs::create_dir(&ugoira_dir).await {
-                    error!("解压目标文件夹创建失败: {e}");
+                    error!("创建解压目标文件夹失败: {e}");
                     mid.edit(format!("{prefix} 解压目标文件夹创建失败")).await?;
                     return Ok(());
                 }
@@ -411,8 +411,17 @@ async fn send_pixiv(
             InputMedia::new().mime_type(mime_type).photo(uploaded)
         };
 
-        if index == 0 {
-            media = media.html(&msg).reply_to(msg_id);
+        if medias.len() == 0 {
+            let mut text = msg.clone();
+            if count > 10 {
+                text.push_str(&format!(
+                    "\n{} ~ {} / {}",
+                    index + 1,
+                    (index + 10).min(count),
+                    count,
+                ));
+            }
+            media = media.html(&text).reply_to(msg_id);
         }
         medias.push(media);
         batch_pages.push(page);
