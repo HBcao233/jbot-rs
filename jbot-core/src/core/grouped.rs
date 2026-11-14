@@ -105,9 +105,6 @@ impl GroupedMedias {
         if let Some(task) = &self.task {
             task.abort();
         }
-        if self.messages.len() >= 10 {
-            self.ended.store(true, Ordering::SeqCst);
-        }
 
         self.schedule_task();
     }
@@ -122,10 +119,9 @@ impl GroupedMedias {
             if messages.len() < 10 {
                 sleep(GROUPED_INTERVAL).await;
             }
-            if ended.load(Ordering::SeqCst) {
+            if ended.swap(true, Ordering::SeqCst) {
                 return;
             }
-            ended.store(true, Ordering::SeqCst);
 
             grouped_messages_handler(client.clone(), messages.clone()).await;
 
@@ -145,8 +141,9 @@ pub(crate) fn get_or_insert(client: Client, peer_id: PeerId, message: Arc<Messag
 
     match guard.entry(peer_id) {
         Entry::Occupied(mut entry) => {
-            if !entry.get().ended.load(Ordering::SeqCst) {
-                entry.get_mut().push(message);
+            let group = entry.get_mut();
+            if !group.ended.load(Ordering::SeqCst) && group.messages.len() < 10 {
+                group.push(message);
             } else {
                 entry.insert(GroupedMedias::new(client, message, peer_id));
             }
