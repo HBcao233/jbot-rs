@@ -10,7 +10,8 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use grammers_client::Client;
-use grammers_client::sender::{SenderPool, UpdatesConfiguration};
+use grammers_client::sender::{ConnectionParams, SenderPool, UpdatesConfiguration};
+use grammers_mtproto::transport;
 use grammers_session::storages::SqliteSession;
 use tokio::task::JoinSet;
 use tokio::time::{MissedTickBehavior, interval};
@@ -61,11 +62,14 @@ pub async fn jbot_main() {
 
     let session = Arc::new(SqliteSession::open(SESSION_FILE).await.unwrap());
 
+    let mut connection_params = ConnectionParams::default();
+    connection_params.transport =
+        Box::new(|| Box::new(transport::Obfuscated::new(transport::Intermediate::new())));
     let SenderPool {
         runner,
         updates,
         handle,
-    } = SenderPool::new(Arc::clone(&session), api_id);
+    } = SenderPool::with_configuration(Arc::clone(&session), api_id, connection_params);
     let client = Client::new(handle.clone());
     let pool_task = tokio::spawn(runner.run());
 
