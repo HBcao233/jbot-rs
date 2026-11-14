@@ -105,8 +105,8 @@ pub enum GetTweetError {
 #[derive(Deserialize)]
 pub(super) struct TweetRaw {
     // article:
-    core: Core,
-    legacy: Legacy,
+    pub(super) core: Option<Core>,
+    pub(super) legacy: Option<Legacy>,
     // views: Views,
     pub(super) tombstone: Option<Tombstone>,
 }
@@ -119,7 +119,7 @@ struct Views {
 */
 
 #[derive(Deserialize)]
-struct Legacy {
+pub(super) struct Legacy {
     id_str: String,
     // user_id_str: String,
     created_at: String,
@@ -203,7 +203,7 @@ pub struct UserMentionEntity {
 */
 
 #[derive(Deserialize)]
-struct Core {
+pub(super) struct Core {
     user_results: UsersResults,
 }
 
@@ -271,8 +271,8 @@ impl From<TweetRaw> for Tweet {
             full_text,
             display_text_range,
             entities,
-        } = x.legacy;
-        let user = x.core.user_results.result;
+        } = x.legacy.unwrap();
+        let user = x.core.unwrap().user_results.result;
         Self {
             id: id_str,
             created_at,

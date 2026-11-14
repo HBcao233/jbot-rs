@@ -1,6 +1,8 @@
 mod data_source;
 
+use std::borrow::Cow;
 use std::env;
+use std::fmt::Write;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
@@ -412,16 +414,18 @@ async fn send_pixiv(
         };
 
         if medias.len() == 0 {
-            let mut text = msg.clone();
+            let mut text = Cow::Borrowed(msg.as_str());
             if count > 10 {
-                text.push_str(&format!(
+                write!(
+                    text.to_mut(),
                     "\n{} ~ {} / {}",
                     index + 1,
                     (index + 10).min(count),
                     count,
-                ));
+                )
+                .unwrap();
             }
-            media = media.html(&text).reply_to(msg_id);
+            media = media.html(text).reply_to(msg_id);
         }
         medias.push(media);
         batch_pages.push(page);

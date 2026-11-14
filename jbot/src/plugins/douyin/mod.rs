@@ -11,7 +11,7 @@ use grammers_session::types::{PeerKind, PeerRef};
 use grammers_tl_types as tl;
 use jbot_core::curl::{get_client, stream_download, stream_download_with_callback};
 use jbot_core::database as db;
-use jbot_core::progress::{Progress, ProgressScheduler, ProgressStyle};
+use jbot_core::progress::{Progress, ProgressHandle, ProgressStyle};
 use jbot_core::utils::upload_file_with_callback;
 use regex::regex;
 use tracing::{error, info, warn};
@@ -124,14 +124,18 @@ async fn send_douyin(
                 .reply_to(Some(msg_id)),
         )
         .await?;
-    let mut mid = Arc::new(mid);
+    let Progress {
+        handle: bar,
+        runner,
+    } = Progress::new(mid);
+    let progress_task = tokio::spawn(runner.run());
 
     let wreq_client = get_client().build()?;
     let detail = match get_aweme_detail(&wreq_client, aid).await {
         Ok(d) => d,
         Err(e) => {
             error!("{prefix} 获取Aweme失败: {e}");
-            mid.edit(format!("{prefix} {e}")).await?;
+            bar.edit(format!("{prefix} {e}"));
             return Ok(());
         }
     };
@@ -143,7 +147,6 @@ async fn send_douyin(
     let down_client = get_client().redirect(Policy::limited(5)).build()?;
     let headers = vec![("referer", "https://www.douyin.com/".to_string())];
 
-    let mut deleted = false;
     if detail.images.is_none()
         && let Some(ref video) = detail.video
     {
@@ -163,7 +166,6 @@ async fn send_douyin(
             }
         };
 
-        let bar = ProgressScheduler::new(Progress::new(Arc::clone(&mid)));
         let w = video.play_addr.width;
         let h = video.play_addr.height;
         let duration = video.duration as f64 / 1000.0;
@@ -176,7 +178,6 @@ async fn send_douyin(
             msg_id,
             &prefix,
             &msg,
-            Arc::clone(&mid),
             &bar,
             &down_client,
             thumb.clone(),
@@ -192,17 +193,7 @@ async fn send_douyin(
             error!("发送视频失败: {e}");
         }
 
-        mid.delete().await?;
-        mid = Arc::new(
-            client
-                .send_message(
-                    peer_ref,
-                    InputMessage::new()
-                        .text(format!("{prefix} 请等待..."))
-                        .reply_to(Some(msg_id)),
-                )
-                .await?,
-        );
+        bar.rebuild(client.clone());
 
         if let Some(ref download_addr) = video.download_addr {
             let key = format!("douyin_{aid}_down");
@@ -213,7 +204,6 @@ async fn send_douyin(
                 msg_id,
                 &prefix,
                 &msg,
-                Arc::clone(&mid),
                 &bar,
                 &down_client,
                 thumb.clone(),
@@ -230,30 +220,20 @@ async fn send_douyin(
             }
         }
 
-        mid.delete().await?;
-        deleted = true;
+        bar.rebuild(client.clone());
     }
 
-    if let Some(images) = detail.images {
-        if deleted {
-            mid = Arc::new(
-                client
-                    .send_message(
-                        peer_ref,
-                        InputMessage::new()
-                            .text(format!("{prefix} 请等待..."))
-                            .reply_to(Some(msg_id)),
-                    )
-                    .await?,
-            );
-        }
-
+    if let Some(ref images) = detail.images {
         let count = images.len();
         let mut medias = Vec::with_capacity(count);
         let map_key = |index: usize, image: &types::Image| match image.video {
             None => format!("douyin_image_{aid}_p{}", index),
             Some(_) => format!("douyin_image_video_{aid}_p{}", index),
         };
+
+        bar.set_total(count);
+        bar.set_style(ProgressStyle::Plain);
+
         for (index, image) in images.iter().enumerate() {
             let key = map_key(index, image);
             let human_index = index + 1;
@@ -285,28 +265,25 @@ async fn send_douyin(
                 let url = video.play_addr.url_list.last().unwrap();
                 let name = format!("{key}.mp4");
 
-                let p = format!("{prefix} 下载动图中 {human_index} / {count}...");
-                info!("{p}");
-                let _ = mid.edit(p).await;
+                bar.set_prefix(&format!("{prefix} 下载动图中"));
+                bar.update(human_index, None);
+
                 let path = match stream_download(&down_client, url, &name, &headers).await {
                     Ok(path) => path,
                     Err(e) => {
                         let tip = format!("{prefix} 动图 {human_index} 下载失败: {e}");
                         error!("{tip}");
-                        mid.edit(tip).await?;
+                        bar.edit(&tip);
                         return Ok(());
                     }
                 };
 
-                let p = format!("{prefix} 上传动图中 {human_index} / {count}...");
-                info!("{p}");
-                let _ = mid.edit(p).await;
                 let uploaded = match client.upload_file(path).await {
                     Ok(u) => u,
                     Err(_) => {
                         let p = format!("{prefix} 上传动图 {human_index} 失败");
                         error!("{p}");
-                        mid.edit(p).await?;
+                        bar.edit(p);
                         return Ok(());
                     }
                 };
@@ -341,27 +318,23 @@ async fn send_douyin(
             } else {
                 let name = format!("{key}.jpeg");
                 let url = image.url_list.last().unwrap();
-                let _ = mid
-                    .edit(format!("{prefix} 下载图片中 {human_index} / {count}..."))
-                    .await;
+                bar.set_prefix(&format!("{prefix} 下载图片中"));
+                bar.update(human_index, None);
 
                 let path = match stream_download(&down_client, &url, &name, &headers).await {
                     Ok(path) => path,
                     Err(e) => {
                         let tip = format!("{prefix} 图片 {human_index} 下载失败: {e}");
                         error!("{tip}");
-                        mid.edit(tip).await?;
+                        bar.edit(tip);
                         return Ok(());
                     }
                 };
 
-                let _ = mid
-                    .edit(format!("{prefix} 上传图片中 {human_index} / {count}..."))
-                    .await;
                 let Ok(uploaded) = client.upload_file(path).await else {
                     let tip = format!("{prefix} 图片 {human_index} 上传失败");
                     error!("{tip}");
-                    mid.edit(tip).await?;
+                    bar.edit(tip);
                     return Ok(());
                 };
 
@@ -393,29 +366,17 @@ async fn send_douyin(
             Err(e) => {
                 let tip = format!("{prefix} 媒体发送失败");
                 error!("{tip}: {e:?}");
-                mid.edit(tip).await?;
+                bar.edit(tip);
                 return Ok(());
             }
         }
 
-        mid.delete().await?;
-        deleted = true;
+        bar.rebuild(client.clone());
     }
 
-    if let Some(music) = detail.music {
-        if deleted {
-            mid = Arc::new(
-                client
-                    .send_message(
-                        peer_ref,
-                        InputMessage::new()
-                            .text(format!("{prefix} 请等待..."))
-                            .reply_to(Some(msg_id)),
-                    )
-                    .await?,
-            );
-        }
-
+    if detail.images.is_some()
+        && let Some(music) = detail.music
+    {
         let key = format!("douyin_music_{aid}");
         let thumb_url = music.cover_thumb.url_list.last().unwrap();
         let thumb_name = format!("{key}_thumb.jpg");
@@ -440,35 +401,32 @@ async fn send_douyin(
                 _ => {
                     let tip = format!("{prefix} {}", music.offline_desc);
                     error!("{tip}");
-                    mid.edit(tip).await?;
+                    bar.edit(tip);
                     return Ok(());
                 }
             },
         };
         let name = format!("{key}.mp3");
 
-        let p = format!("{prefix} 下载音乐中...");
-        info!("{p}");
-        let _ = mid.edit(p).await;
+        bar.set_prefix(&format!("{prefix} 下载音乐中..."));
         let path = match stream_download(&down_client, url, &name, &headers).await {
             Ok(path) => path,
             Err(e) => {
                 let tip = format!("{prefix} 音乐下载失败: {e}");
                 error!("{tip}");
-                mid.edit(tip).await?;
+                bar.edit(tip);
                 return Ok(());
             }
         };
 
         let p = format!("{prefix} 上传音乐中...");
         info!("{p}");
-        let _ = mid.edit(p).await;
         let uploaded = match client.upload_file(path).await {
             Ok(u) => u,
             Err(_) => {
-                let p = format!("{prefix} 上传音乐失败");
-                error!("{p}");
-                mid.edit(p).await?;
+                let tip = format!("{prefix} 上传音乐失败");
+                error!("{tip}");
+                bar.edit(&tip);
                 return Ok(());
             }
         };
@@ -519,9 +477,10 @@ async fn send_douyin(
                 error!("消息发送失败: {e}");
             }
         }
-
-        mid.delete().await?;
     }
+
+    bar.delete();
+    let _ = progress_task.await;
 
     Ok(())
 }
@@ -532,8 +491,7 @@ async fn send_video(
     msg_id: i32,
     prefix: &str,
     msg: &str,
-    mid: Arc<Message>,
-    bar: &ProgressScheduler,
+    bar: &ProgressHandle,
     wreq_client: &wreq::Client,
     thumb: Option<tl::enums::InputFile>,
     headers: &[(&str, String)],
@@ -550,16 +508,15 @@ async fn send_video(
 
         let p = format!("{prefix} 下载视频中...");
         info!("{p}");
-        bar.style(ProgressStyle::Size);
-        bar.prefix(&p);
-        mid.edit(p).await?;
+        bar.set_style(ProgressStyle::Size);
+        bar.set_prefix(&p);
         let path = match stream_download_with_callback(
             &wreq_client,
             url,
             &name,
             &headers,
             |downloaded, total| {
-                bar.sync_update(downloaded, total);
+                bar.update(downloaded, total);
             },
         )
         .await
@@ -568,22 +525,21 @@ async fn send_video(
             Err(e) => {
                 let tip = format!("{prefix} 视频下载失败: {e}");
                 error!("{tip}");
-                mid.edit(tip).await?;
+                bar.edit(tip);
                 return Ok(());
             }
         };
 
         let p = format!("{prefix} 上传中...");
         info!("{p}");
-        bar.style(ProgressStyle::Size);
-        bar.prefix(&p);
-        mid.edit(p).await?;
+        bar.set_style(ProgressStyle::Size);
+        bar.set_prefix(&p);
         let Ok(uploaded) = upload_file_with_callback(&client, path, |uploaded, total| {
-            bar.sync_update(uploaded, total);
+            bar.update(uploaded, total);
         })
         .await
         else {
-            mid.edit(format!("{prefix} 上传失败")).await?;
+            bar.edit(&format!("{prefix} 上传失败"));
             return Ok(());
         };
 

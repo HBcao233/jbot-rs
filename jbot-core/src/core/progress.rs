@@ -1,14 +1,14 @@
 use std::fmt::Write;
 use std::iter::repeat;
+use std::ops::ControlFlow;
 use std::pin::Pin;
-use std::sync::{Arc, RwLock};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
-use grammers_client::message::Message;
+use grammers_client::client::Client;
+use grammers_client::message::{InputMessage, Message};
 use tokio::io::{self, AsyncRead, ReadBuf};
 use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
 use tracing::error;
 
 const UPDATE_LIMIT: Duration = Duration::from_secs(1);
@@ -26,7 +26,36 @@ pub enum ProgressStyle {
     Time,
 }
 
-struct Inner {
+enum Command {
+    Update { p: usize, total: Option<usize> },
+    Add(usize),
+    SetTotal(usize),
+    SetStyle(ProgressStyle),
+    SetPrefix(String),
+    Quit,
+    Delete,
+    Edit(InputMessage),
+    Rebuild { client: Client },
+}
+
+struct Rebuilding {
+    client: Client,
+}
+
+pub struct Progress {
+    pub handle: ProgressHandle,
+    pub runner: ProgressRunner,
+}
+
+#[derive(Clone)]
+pub struct ProgressHandle(mpsc::UnboundedSender<Command>);
+
+pub struct ProgressRunner {
+    mid: Message,
+    rx: mpsc::UnboundedReceiver<Command>,
+    deleted: bool,
+    rebuilding: Option<Rebuilding>,
+
     p: usize,
     total: usize,
     prefix: String,
@@ -36,12 +65,83 @@ struct Inner {
     message_id_invalid: bool,
 }
 
-pub struct Progress {
-    mid: Arc<Message>,
-    inner: RwLock<Inner>,
+impl Progress {
+    pub fn new(mid: Message) -> Self {
+        let now = Instant::now();
+        let (tx, rx) = mpsc::unbounded_channel();
+        Self {
+            handle: ProgressHandle(tx),
+            runner: ProgressRunner {
+                mid,
+                rx,
+                deleted: false,
+                rebuilding: None,
+                p: 0,
+                total: 100,
+                prefix: String::new(),
+                style: ProgressStyle::Percent,
+                last_update: now.checked_sub(UPDATE_LIMIT).unwrap_or(now),
+                last_text: None,
+                message_id_invalid: false,
+            },
+        }
+    }
+
+    pub fn total(mut self, total: usize) -> Self {
+        self.runner.total = total;
+        self
+    }
+
+    pub fn prefix(mut self, prefix: &str) -> Self {
+        self.runner.prefix = prefix.to_string();
+        self
+    }
+
+    pub fn style(mut self, style: ProgressStyle) -> Self {
+        self.runner.style = style;
+        self
+    }
 }
 
-impl Progress {
+impl ProgressHandle {
+    pub fn update(&self, p: usize, total: Option<usize>) -> bool {
+        self.0.send(Command::Update { p, total }).is_ok()
+    }
+
+    pub fn add(&self, add: usize) -> bool {
+        self.0.send(Command::Add(add)).is_ok()
+    }
+
+    pub fn set_total(&self, total: usize) -> bool {
+        self.0.send(Command::SetTotal(total)).is_ok()
+    }
+
+    pub fn set_prefix(&self, prefix: &str) -> bool {
+        self.0.send(Command::SetPrefix(prefix.to_string())).is_ok()
+    }
+
+    pub fn set_style(&self, style: ProgressStyle) -> bool {
+        self.0.send(Command::SetStyle(style)).is_ok()
+    }
+
+    pub fn finish(&self) -> bool {
+        self.0.send(Command::Quit).is_ok()
+    }
+
+    pub fn delete(&self) -> bool {
+        self.0.send(Command::Delete).is_ok()
+    }
+
+    pub fn edit<M: Into<InputMessage>>(&self, message: M) -> bool {
+        self.0.send(Command::Edit(message.into())).is_ok()
+    }
+
+    pub fn rebuild(&self, client: Client) -> bool {
+        self.0.send(Command::Rebuild { client }).is_ok()
+    }
+}
+
+impl ProgressRunner {
     const CHARS: [char; 9] = [
         '\u{3000}', // 全角空格
         '\u{258f}', // 1/8 方块
@@ -54,32 +154,54 @@ impl Progress {
         '\u{2588}', // 全方块
     ];
 
-    pub fn new(mid: Arc<Message>) -> Self {
-        let now = Instant::now();
-        Self {
-            mid,
-            inner: RwLock::new(Inner {
-                p: 0,
-                total: 100,
-                prefix: String::new(),
-                style: ProgressStyle::Percent,
-                last_update: now.checked_sub(UPDATE_LIMIT).unwrap_or(now),
-                last_text: None,
-                message_id_invalid: false,
-            }),
+    pub async fn run(mut self) -> Message {
+        while let Some(command) = self.rx.recv().await {
+            let flow = self.process_command(command).await;
+            match flow {
+                ControlFlow::Continue(()) => continue,
+                ControlFlow::Break(()) => break,
+            }
         }
+        self.mid
     }
 
-    pub fn total(&self, total: usize) {
-        self.inner.write().unwrap().total = total;
-    }
-
-    pub fn prefix(&self, prefix: &str) {
-        self.inner.write().unwrap().prefix = prefix.to_string();
-    }
-
-    pub fn style(&self, style: ProgressStyle) {
-        self.inner.write().unwrap().style = style;
+    async fn process_command(&mut self, command: Command) -> ControlFlow<()> {
+        match command {
+            Command::Update { p, total } => {
+                self.update(p, total).await;
+                ControlFlow::Continue(())
+            }
+            Command::Add(add) => {
+                self.add(add).await;
+                ControlFlow::Continue(())
+            }
+            Command::SetTotal(total) => {
+                self.total = total;
+                ControlFlow::Continue(())
+            }
+            Command::SetStyle(style) => {
+                self.style = style;
+                ControlFlow::Continue(())
+            }
+            Command::SetPrefix(prefix) => {
+                self.prefix = prefix;
+                ControlFlow::Continue(())
+            }
+            Command::Quit => ControlFlow::Break(()),
+            Command::Delete => {
+                self.delete().await;
+                ControlFlow::Break(())
+            }
+            Command::Edit(message) => {
+                self.edit(message).await;
+                ControlFlow::Continue(())
+            }
+            Command::Rebuild { client } => {
+                self.rebuilding = Some(Rebuilding { client });
+                self.delete().await;
+                ControlFlow::Continue(())
+            }
+        }
     }
 
     fn format_size(bytes: usize) -> String {
@@ -111,11 +233,12 @@ impl Progress {
         }
     }
 
-    fn get_text(p: usize, total: usize, style: ProgressStyle, prefix: &str) -> String {
+    fn get_text(&self) -> String {
         const CELLS: usize = 13;
         const STEPS: usize = CELLS * 8;
 
-        let p = p.min(total);
+        let total = self.total;
+        let p = self.p.min(total);
         let x = if total == 0 {
             0
         } else {
@@ -123,8 +246,8 @@ impl Progress {
         };
         let (full, part) = (x / 8, x % 8);
 
-        let mut text = String::with_capacity(prefix.len() + CELLS * 3 + 48);
-        text.push_str(prefix);
+        let mut text = String::with_capacity(self.prefix.len() + CELLS * 3 + 48);
+        text.push_str(&self.prefix);
         text.push('[');
         text.extend(repeat(Self::CHARS[8]).take(full));
         if x != STEPS {
@@ -133,7 +256,7 @@ impl Progress {
         }
         text.push(']');
         text.push(' ');
-        match style {
+        match self.style {
             ProgressStyle::Plain => write!(text, "{} / {}", p, total).unwrap(),
             ProgressStyle::Percent => {
                 if total == 0 {
@@ -165,108 +288,88 @@ impl Progress {
         text
     }
 
-    pub async fn update(&self, p: usize, total: Option<usize>) {
-        {
-            let mut guard = self.inner.write().unwrap();
-            guard.p = p;
-            if let Some(t) = total {
-                guard.total = t;
-            }
+    async fn update(&mut self, p: usize, total: Option<usize>) {
+        self.p = p;
+        if let Some(t) = total {
+            self.total = t;
         }
+
         self.update_display().await;
     }
 
-    pub async fn add(&self, add: usize) {
-        {
-            let mut guard = self.inner.write().unwrap();
-            guard.p = guard.p.saturating_add(add);
-        }
+    async fn add(&mut self, add: usize) {
+        self.p = self.p.saturating_add(add);
+
         self.update_display().await;
     }
 
-    async fn update_display(&self) {
-        let (p, total, style, prefix, last_text, last_update, message_id_invalid) = {
-            let guard = self.inner.read().unwrap();
-            (
-                guard.p,
-                guard.total,
-                guard.style,
-                guard.prefix.clone(),
-                guard.last_text.clone(),
-                guard.last_update,
-                guard.message_id_invalid,
-            )
-        };
-        if message_id_invalid {
+    async fn update_display(&mut self) {
+        if self.message_id_invalid {
             return;
         }
-        if last_update.elapsed() < UPDATE_LIMIT {
+        if self.last_update.elapsed() < UPDATE_LIMIT {
             return;
         }
 
-        let text = Self::get_text(p, total, style, &prefix);
-        if Some(&text) == last_text.as_ref() {
-            let mut guard = self.inner.write().unwrap();
-            guard.last_update = Instant::now();
+        let text = self.get_text();
+        if Some(&text) == self.last_text.as_ref() {
             return;
         }
 
-        match self.mid.edit(&text).await {
-            Ok(_) => {
-                let mut guard = self.inner.write().unwrap();
-                guard.last_update = Instant::now();
-                guard.last_text = Some(text);
+        if self.edit(InputMessage::new().text(&text)).await {
+            self.last_update = Instant::now();
+            self.last_text = Some(text);
+        }
+    }
+
+    async fn edit(&mut self, message: InputMessage) -> bool {
+        if let Some(Rebuilding { client }) = self.rebuilding.take() {
+            let Ok(Some(peer_ref)) = self.mid.peer_ref().await else {
+                return false;
+            };
+            let reply_to = self.mid.reply_to_message_id();
+            match client
+                .send_message(peer_ref, message.reply_to(reply_to))
+                .await
+            {
+                Ok(message) => {
+                    self.mid = message;
+                    true
+                }
+                Err(e) => {
+                    error!("进度条重发失败: {e}");
+                    if e.is("MESSAGE_ID_INVALID") {
+                        self.message_id_invalid = true;
+                    }
+                    false
+                }
             }
+        } else {
+            match self.mid.edit(message).await {
+                Ok(_) => true,
+                Err(e) => {
+                    error!("进度条更新失败: {e}");
+                    if e.is("MESSAGE_ID_INVALID") {
+                        self.message_id_invalid = true;
+                    }
+                    false
+                }
+            }
+        }
+    }
+
+    async fn delete(&mut self) -> bool {
+        if self.deleted {
+            return true;
+        }
+        self.deleted = true;
+        match self.mid.delete().await {
+            Ok(_) => true,
             Err(e) => {
-                error!("进度条更新失败: {e}");
-                if e.is("MESSAGE_ID_INVALID") {
-                    let mut guard = self.inner.write().unwrap();
-                    guard.message_id_invalid = true;
-                }
+                error!("删除进度条失败: {e}");
+                false
             }
         }
-    }
-}
-
-pub struct ProgressScheduler {
-    bar: Arc<Progress>,
-    tx: mpsc::Sender<(usize, Option<usize>)>,
-    task: JoinHandle<()>,
-}
-
-impl ProgressScheduler {
-    pub fn new(bar: Progress) -> Self {
-        let bar = Arc::new(bar);
-        let (tx, mut rx) = mpsc::channel(10);
-        let bar_clone = bar.clone();
-
-        Self {
-            bar,
-            task: tokio::spawn(async move {
-                while let Some((downloaded, total)) = rx.recv().await {
-                    bar_clone.update(downloaded, total).await;
-                }
-            }),
-            tx,
-        }
-    }
-
-    pub fn sync_update(&self, downloaded: usize, total: Option<usize>) {
-        let _ = self.tx.try_send((downloaded, total));
-    }
-}
-
-impl std::ops::Deref for ProgressScheduler {
-    type Target = Progress;
-
-    fn deref(&self) -> &Self::Target {
-        &self.bar
-    }
-}
-
-impl Drop for ProgressScheduler {
-    fn drop(&mut self) {
-        self.task.abort();
     }
 }
 

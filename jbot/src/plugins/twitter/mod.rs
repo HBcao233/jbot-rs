@@ -1,7 +1,9 @@
 mod data_source;
 mod tweet;
 
+use std::borrow::Cow;
 use std::env;
+use std::fmt::Write;
 use std::sync::{Arc, OnceLock};
 
 use anyhow::Context;
@@ -16,8 +18,9 @@ use jbot_core::curl::{get_client, stream_download};
 use jbot_core::database as db;
 use jbot_core::ffmpeg;
 use jbot_core::id;
+use jbot_core::progress::{Progress, ProgressStyle};
 use regex::regex;
-use tracing::{error, info, warn};
+use tracing::{error, info, trace, warn};
 
 use self::data_source::{get_tweet, parse_msg};
 
@@ -124,21 +127,33 @@ async fn send_twitter(
                 .reply_to(Some(msg_id)),
         )
         .await?;
+    let Progress {
+        handle: bar,
+        runner,
+    } = Progress::new(mid)
+        .style(ProgressStyle::Plain)
+        .prefix(&format!("[{tid}] 媒体下载中"));
+    let progress_task = tokio::spawn(runner.run());
 
     let wreq_client = get_client().build()?;
     let tweet = match get_tweet(&wreq_client, &tid).await {
         Ok(tweet) => tweet,
         Err(e) => {
-            mid.edit(format!("[{tid}] {e}")).await?;
+            bar.edit(format!("[{tid}] {e}"));
             return Ok(());
         }
     };
 
+    const BATCH_SIZE: usize = 10;
     let msg = parse_msg(&tweet);
     let mut medias = Vec::with_capacity(4);
+
     if let Some(entities) = &tweet.entities().media {
         let headers = Vec::new();
         let count = entities.len();
+        let mut batch_index = 0;
+        bar.set_total(count);
+
         for (index, media) in entities.into_iter().enumerate() {
             let media_type = media.r#type.as_str();
             let key = format!("{tid}_{}", index + 1);
@@ -146,11 +161,11 @@ async fn send_twitter(
             let cache = db::get_media(&key).await?;
 
             let mut input_media = if let Some(m) = cache {
-                info!("使用已发送过的媒体: {key}");
+                trace!("使用已发送过的媒体: {key}");
                 InputMedia::new().media(m)
             } else {
-                mid.edit(format!("[{tid}] 媒体下载中 {} / {}...", index + 1, count))
-                    .await?;
+                bar.set_prefix(&format!("[{tid}] 媒体下载中"));
+                bar.update(index + 1, None);
 
                 let (ext, url, duration_millis) = match media_type {
                     "photo" => {
@@ -180,16 +195,18 @@ async fn send_twitter(
                             ),
                             None => {
                                 error!("type={} 但 video_info 为空", media_type);
-                                let _ = mid.edit("video_info 为空").await;
+                                bar.edit("video_info 为空");
                                 return Ok(());
                             }
                         };
                         ("mp4", video.url.clone(), duration_millis)
                     }
                     _ => {
-                        let text = format!("暂不支持的媒体类型: {}", media_type);
-                        error!("{}", text);
-                        let _ = mid.edit(text).await;
+                        let tip = format!("暂不支持的媒体类型: {}", media_type);
+                        error!("{tip}");
+                        bar.edit(tip);
+                        bar.finish();
+                        let _ = progress_task.await;
                         return Ok(());
                     }
                 };
@@ -200,17 +217,23 @@ async fn send_twitter(
                     Err(e) => {
                         let tip = format!("[{tid}] 媒体 {} 下载失败", index + 1);
                         error!("{tip}: {e}");
-                        mid.edit(tip).await?;
+                        bar.edit(tip);
+                        bar.finish();
+                        let _ = progress_task.await;
                         return Ok(());
                     }
                 };
 
-                mid.edit(format!("[{tid}] 媒体上传中 {} / {}...", index + 1, count))
-                    .await?;
-                let Ok(uploaded) = client.upload_file(&path).await else {
-                    mid.edit(format!("[{tid}] 媒体 {} 上传失败", index + 1))
-                        .await?;
-                    return Ok(());
+                let uploaded = match client.upload_file(&path).await {
+                    Ok(uploaded) => uploaded,
+                    Err(e) => {
+                        let tip = format!("[{tid}] 媒体 {} 上传失败", index + 1);
+                        error!("{tip}: {e}");
+                        bar.edit(tip);
+                        bar.finish();
+                        let _ = progress_task.await;
+                        return Ok(());
+                    }
                 };
 
                 match media_type {
@@ -287,42 +310,55 @@ async fn send_twitter(
                 }
             };
 
-            if index == 0 {
-                input_media = input_media.html(&msg).reply_to(Some(msg_id));
+            if medias.len() == 0 {
+                let mut text = Cow::Borrowed(msg.as_str());
+                if count > 10 {
+                    write!(
+                        text.to_mut(),
+                        "\n{} ~ {} / {}",
+                        index + 1,
+                        (index + 10).min(count),
+                        count,
+                    )
+                    .unwrap();
+                }
+                input_media = input_media.html(text).reply_to(Some(msg_id));
             }
-            medias.push(input_media)
-        }
-    }
+            medias.push(input_media);
 
-    if medias.is_empty() {
-        client
-            .send_message(
-                peer_ref,
-                InputMessage::new().html(msg).reply_to(Some(msg_id)),
-            )
-            .await?;
-    } else {
-        let messages = match client.send_album(peer_ref, medias).await {
-            Ok(m) => m,
-            Err(e) => {
-                let text = format!("[{tid}] 媒体发送失败");
-                error!("{text}: {e:?}");
-                mid.edit(text).await?;
-                return Ok(());
-            }
-        };
+            if medias.len() >= BATCH_SIZE || index == count - 1 {
+                let chunk = std::mem::take(&mut medias);
+                let chunk_size = chunk.len();
 
-        for (index, message) in messages.into_iter().enumerate() {
-            let key = format!("{tid}_{}", index + 1);
-            if let Some(m) = message {
-                match db::insert_from_message(&m, Some(&key)).await {
-                    Ok(_) => {
-                        info!("添加缓存媒体: {key}");
-                    }
+                let messages = match client.send_album(peer_ref, chunk).await {
+                    Ok(m) => m,
                     Err(e) => {
-                        error!("添加缓存媒体 {key} 失败: {e}");
+                        let tip = format!("[{tid}] 媒体发送失败");
+                        error!("{tip}: {e:?}");
+                        bar.edit(tip);
+                        bar.finish();
+                        let _ = progress_task.await;
+                        return Ok(());
+                    }
+                };
+
+                for (i, message) in messages.into_iter().enumerate() {
+                    let key = format!("{tid}_{}", batch_index + i + 1);
+                    if let Some(m) = message {
+                        match db::insert_from_message(&m, Some(&key)).await {
+                            Ok(_) => {
+                                trace!("添加缓存媒体: {key}");
+                            }
+                            Err(e) => {
+                                error!("添加缓存媒体 {key} 失败: {e}");
+                            }
+                        }
                     }
                 }
+
+                batch_index += chunk_size;
+
+                bar.rebuild(client.clone());
             }
         }
 
@@ -340,8 +376,17 @@ async fn send_twitter(
         {
             error!("发送消息失败: {e}");
         }
+    } else {
+        client
+            .send_message(
+                peer_ref,
+                InputMessage::new().html(msg).reply_to(Some(msg_id)),
+            )
+            .await?;
     }
-    mid.delete().await?;
+
+    bar.delete();
+    let _ = progress_task.await;
 
     Ok(())
 }
@@ -418,7 +463,7 @@ async fn send_original(client: Client, callback: CallbackQuery, tid: u64) {
             let cache = db::get_media(&key).await.ok().and_then(|v| v);
 
             let input_media = if let Some(m) = cache {
-                info!("使用已发送过的文件: {key}");
+                trace!("使用已发送过的文件: {key}");
                 m
             } else {
                 let tip = format!("[{tid}] 媒体下载中 {} / {}...", index + 1, count);
@@ -523,7 +568,7 @@ async fn send_original(client: Client, callback: CallbackQuery, tid: u64) {
             if let Some(m) = message {
                 match db::insert_from_message(&m, Some(&key)).await {
                     Ok(_) => {
-                        info!("添加缓存媒体: {key}");
+                        trace!("添加缓存媒体: {key}");
                     }
                     Err(e) => {
                         error!("添加缓存媒体 {key} 失败: {e}");

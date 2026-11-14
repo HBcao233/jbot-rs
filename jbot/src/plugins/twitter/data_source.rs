@@ -165,6 +165,10 @@ pub async fn get_tweet(client: &wreq::Client, tid: &str) -> Result<Tweet, GetTwe
         return Err(GetTweetError::Api(tombstone.text.text));
     }
 
+    if raw.legacy.is_none() || raw.core.is_none() {
+        return Err(GetTweetError::Api("legacy 不存在".to_string()));
+    }
+
     Ok(raw.into())
 }
 

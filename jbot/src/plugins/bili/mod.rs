@@ -12,11 +12,10 @@ use grammers_client::update::Update;
 use grammers_session::storages::SqliteSession;
 use grammers_session::types::{PeerId, PeerKind, PeerRef};
 use grammers_tl_types as tl;
-use jb_core::bili::types::{BiliError, BiliId, DurlInfo, GaiaValidateData, Geetest, VgateData};
-use jb_core::bili::{get_gaia, validate_gaia};
+use jb_core::bili::types::{BiliId, DurlInfo};
 use jbot_core::curl::{get_client, stream_download, stream_download_with_callback};
 use jbot_core::database as db;
-use jbot_core::progress::{Progress, ProgressScheduler, ProgressStyle};
+use jbot_core::progress::{Progress, ProgressStyle};
 use jbot_core::utils::upload_file_with_callback;
 use jbot_core::{FFmpeg, id};
 use regex::regex;
@@ -211,7 +210,11 @@ async fn send_bili(
                 .reply_to(msg_id),
         )
         .await?;
-    let mid = Arc::new(mid);
+    let Progress {
+        handle: bar,
+        runner,
+    } = Progress::new(mid);
+    let progress_task = tokio::spawn(runner.run());
 
     let wreq_client = get_client().build()?;
     let referer = format!("https://www.bilibili.com/video/{}/", bvid);
@@ -236,6 +239,8 @@ async fn send_bili(
         let buttons: Vec<Button> = (1..=len).map(|p| GetBiliPageButton::new(aid, p)).collect();
         let buttons = group_buttons(buttons);
         let reply_markup = ReplyMarkup::from_buttons(&buttons);
+        bar.finish();
+        let mid = progress_task.await?;
         mid.edit(
             InputMessage::new()
                 .text("检测到分P视频，请选择分集:")
@@ -246,7 +251,9 @@ async fn send_bili(
     }
 
     let Ok((msg, page, pic)) = parse_msg(info, p.unwrap_or(1)) else {
-        let _ = mid.edit("视频分P 不存在").await;
+        bar.edit("视频分P 不存在");
+        bar.finish();
+        let _ = progress_task.await;
         return Ok(());
     };
     let cid = page.cid;
@@ -265,74 +272,12 @@ async fn send_bili(
     } else {
         let playurl = match get_playurl(&wreq_client, aid, &bvid, cid, None).await {
             Ok(p) => p,
-            Err(e) => match e {
-                BiliError::Voucher(v_voucher) => match get_gaia(&wreq_client, v_voucher).await {
-                    Ok(VgateData {
-                        r#type: _,
-                        token,
-                        geetest: Geetest { challenge, gt },
-                    }) => {
-                        let _ = mid.delete().await;
-                        let url = format!(
-                            "https://hbcao233.github.io/geetest-validator/?challenge={challenge}&gt={gt}"
-                        );
-                        let reply_markup =
-                            ReplyMarkup::from_buttons_row(&[Button::url("人机验证", url)]);
-                        client.send_message(peer_ref, InputMessage::new().text("请打开下面链接进行 Bilibili 的人机验证，将验证结果发送给小派魔").reply_to(msg_id).reply_markup(reply_markup)).await?;
-                        let (tx, rx) = oneshot::channel();
-                        {
-                            let g = gaia();
-                            let mut guard = g.lock().await;
-                            guard.insert(peer_ref.id, tx);
-                        }
-
-                        let (validate, seccode) = rx.await?;
-                        let GaiaValidateData { grisk_id, .. } =
-                            match validate_gaia(&wreq_client, token, challenge, validate, seccode)
-                                .await
-                            {
-                                Ok(g) => g,
-                                Err(e) => {
-                                    client
-                                        .send_message(
-                                            peer_ref,
-                                            InputMessage::new()
-                                                .text(e.to_string())
-                                                .reply_to(msg_id),
-                                        )
-                                        .await?;
-                                    return Ok(());
-                                }
-                            };
-                        info!("grisk_id: {grisk_id}");
-
-                        match get_playurl(&wreq_client, aid, &bvid, cid, Some(&grisk_id)).await {
-                            Ok(p) => p,
-                            Err(e) => {
-                                client
-                                    .send_message(
-                                        peer_ref,
-                                        InputMessage::new().text(e.to_string()).reply_to(msg_id),
-                                    )
-                                    .await?;
-                                return Ok(());
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        if let Err(e) = mid.edit(e.to_string()).await {
-                            error!("消息发送失败: {e}");
-                        }
-                        return Ok(());
-                    }
-                },
-                _ => {
-                    if let Err(e) = mid.edit(e.to_string()).await {
-                        error!("消息发送失败: {e}");
-                    }
-                    return Ok(());
-                }
-            },
+            Err(e) => {
+                bar.edit(&e.to_string());
+                bar.finish();
+                let _ = progress_task.await;
+                return Ok(());
+            }
         };
 
         let thumb_name = format!("{key}_thumb.jpg");
@@ -349,8 +294,6 @@ async fn send_bili(
                 None
             }
         };
-
-        let bar = ProgressScheduler::new(Progress::new(Arc::clone(&mid)));
 
         let mut videos = Vec::new();
         let mut audios = Vec::new();
@@ -419,8 +362,11 @@ async fn send_bili(
                             url
                         }
                         None => {
+                            error!("{prefix} 所有下载尝试失败");
                             let tip = format!("{prefix} 所有下载尝试失败，请重试");
-                            mid.edit(tip).await?;
+                            bar.edit(tip);
+                            bar.finish();
+                            let _ = progress_task.await;
                             return Ok(());
                         }
                     };
@@ -434,9 +380,8 @@ async fn send_bili(
                         }
                     );
                     info!("{tip}");
-                    bar.style(ProgressStyle::Size);
-                    bar.prefix(&tip);
-                    mid.edit(tip).await?;
+                    bar.set_style(ProgressStyle::Size);
+                    bar.set_prefix(&tip);
 
                     match stream_download_with_callback(
                         &wreq_client,
@@ -444,7 +389,7 @@ async fn send_bili(
                         &video_name,
                         &headers,
                         |downloaded, total| {
-                            bar.sync_update(downloaded, total);
+                            bar.update(downloaded, total);
                         },
                     )
                     .await
@@ -481,8 +426,11 @@ async fn send_bili(
                                     url
                                 }
                                 None => {
+                                    error!("{prefix} 所有下载尝试失败");
                                     let tip = format!("{prefix} 所有下载尝试失败，请重试");
-                                    mid.edit(tip).await?;
+                                    bar.edit(tip);
+                                    bar.finish();
+                                    let _ = progress_task.await;
                                     return Ok(());
                                 }
                             };
@@ -496,9 +444,8 @@ async fn send_bili(
                                 }
                             );
                             info!("{tip}");
-                            bar.style(ProgressStyle::Size);
-                            bar.prefix(&tip);
-                            mid.edit(tip).await?;
+                            bar.set_style(ProgressStyle::Size);
+                            bar.set_prefix(&tip);
 
                             match stream_download_with_callback(
                                 &wreq_client,
@@ -506,7 +453,7 @@ async fn send_bili(
                                 &audio_name,
                                 &headers,
                                 |downloaded, total| {
-                                    bar.sync_update(downloaded, total);
+                                    bar.update(downloaded, total);
                                 },
                             )
                             .await
@@ -522,12 +469,11 @@ async fn send_bili(
 
                         let tip = format!("{prefix} 处理中...");
                         info!("{tip}");
-                        bar.style(ProgressStyle::Time);
-                        bar.prefix(&tip);
-                        mid.edit(tip).await?;
+                        bar.set_style(ProgressStyle::Time);
+                        bar.set_prefix(&tip);
 
                         match merge_media(audio_path, video_path, &name, |current, total| {
-                            bar.sync_update(current, total);
+                            bar.update(current, total);
                         })
                         .await
                         {
@@ -535,7 +481,9 @@ async fn send_bili(
                             Err(e) => {
                                 let tip = format!("{prefix} 视频处理失败");
                                 error!("{tip}: {e}");
-                                mid.edit(tip).await?;
+                                bar.edit(tip);
+                                bar.finish();
+                                let _ = progress_task.await;
                                 return Ok(());
                             }
                         }
@@ -544,15 +492,18 @@ async fn send_bili(
 
                 let tip = format!("{prefix} 上传中...");
                 info!("{tip}");
-                bar.style(ProgressStyle::Size);
-                bar.prefix(&tip);
-                mid.edit(tip).await?;
+                bar.set_style(ProgressStyle::Size);
+                bar.set_prefix(&tip);
                 let Ok(uploaded) = upload_file_with_callback(&client, path, |uploaded, total| {
-                    bar.sync_update(uploaded, total);
+                    bar.update(uploaded, total);
                 })
                 .await
                 else {
-                    mid.edit(format!("{prefix} 上传失败")).await?;
+                    let tip = format!("{prefix} 上传失败");
+                    error!("{tip}");
+                    bar.edit(tip);
+                    bar.finish();
+                    let _ = progress_task.await;
                     return Ok(());
                 };
 
@@ -607,7 +558,9 @@ async fn send_bili(
             error!("消息发送失败: {e}");
         }
     };
-    let _ = mid.delete().await;
+
+    bar.delete();
+    let _ = progress_task.await;
 
     // 封面
     let name = format!("{key}_pic.jpg");
