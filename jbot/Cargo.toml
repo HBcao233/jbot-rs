@@ -14,6 +14,7 @@ edition = "2024"
 core_curl = [
     "jbot-core/core_curl",
     "dep:futures-util",
+    "dep:wreq",
 ]
 
 roll = ["dep:rand"]
@@ -30,7 +31,6 @@ hosting = [
     "dep:serde",
     "dep:thiserror",
     "dep:rand",
-    "dep:wreq",
 ]
 
 bili = [
@@ -87,11 +87,10 @@ all = [
 jbot-core = { path = "../jbot-core" }
 jb-core = { path = "../../jb-rs/jb-core", version = "0.3.0", optional = true }
 
-grammers-client = { path = "../../grammers/grammers-client", default-features = false, features = ["fs", "html"] }
-grammers-session = { path = "../../grammers/grammers-session", default-features = false, features = ["sqlite-storage"] }
-grammers-tl-types = { path = "../../grammers/grammers-tl-types" }
-
-linkme = { version = "0.3.37", default-features = false }
+grammers-client.workspace = true
+grammers-session.workspace = true
+grammers-tl-types.workspace = true
+linkme.workspace = true
 
 anyhow = { version = "1.0", default-features = false }
 dotenvy = { version = "0.15", default-features = false }
@@ -108,7 +107,7 @@ sysinfo = { version = "0.39", default-features = false, features = ["disk", "sys
 
 # ========== optional ==========
 
-libsql = { version = "0.9.30", default-features = false, features = ["core"], optional = true }
+libsql = { version = "0.10.0", default-features = false, features = ["core"], optional = true }
 wreq = { version = "0.16.1", features = ["query", "form", "json", "stream", "multipart"], optional = true }
 wreq-util = { version = "0.2.0", optional = true }
 futures-util = { version = "0.3", optional = true }

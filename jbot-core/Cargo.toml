@@ -20,18 +20,19 @@ core_curl = [
 [dependencies]
 jbot-macro = { path = "../jbot-macro" }
 
-grammers-client = { path = "../../grammers/grammers-client", default-features = false, features = ["fs", "html"] }
-grammers-session = { path = "../../grammers/grammers-session", default-features = false, features = ["sqlite-storage"] }
-grammers-tl-types = { path = "../../grammers/grammers-tl-types" }
+grammers-client.workspace = true
+grammers-session.workspace = true
+grammers-tl-types.workspace = true
+grammers-mtproto.workspace = true
 
 anyhow = { version = "1.0.104", default-features = false }
 tokio = { version = "1.52.3", default-features = false, features = [
     "signal",
     "process",
 ] }
-libsql = { version = "0.9.30", default-features = false, features = ["core"] }
-linkme = { version = "0.3.37", default-features = false }
-jiff = { version = "0.2.37", default-features = false, features = ["std"] }
+libsql = { version = "0.10.0", default-features = false, features = ["core"] }
+linkme.workspace = true
+jiff = { version = "0.2.40", default-features = false, features = ["std"] }
 
 tracing = { version = "0.1.44", default-features = false }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["ansi", "fmt", "std", "env-filter"]}

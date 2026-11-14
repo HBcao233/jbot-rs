@@ -5,3 +5,11 @@ members = [
     "jbot-macro",
 ]
 resolver = "2"
+
+[workspace.dependencies]
+grammers-client = { git = "https://codeberg.org/Lonami/grammers.git", rev = "e61cf8585e1e9969ab81eda9fb4725a1500e2d86", default-features = false, features = ["fs", "html"] }
+grammers-session = { git = "https://codeberg.org/Lonami/grammers.git", rev = "e61cf8585e1e9969ab81eda9fb4725a1500e2d86", default-features = false, features = ["sqlite-storage"] }
+grammers-tl-types = { git = "https://codeberg.org/Lonami/grammers.git", rev = "e61cf8585e1e9969ab81eda9fb4725a1500e2d86" }
+grammers-mtproto = { git = "https://codeberg.org/Lonami/grammers.git", rev = "e61cf8585e1e9969ab81eda9fb4725a1500e2d86" }
+
+linkme = { version = "0.3.37", default-features = false }
