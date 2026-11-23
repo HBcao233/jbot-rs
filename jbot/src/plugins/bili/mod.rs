@@ -16,7 +16,7 @@ use jb_core::bili::types::{BiliId, DurlInfo};
 use jbot_core::curl::{get_client, stream_download, stream_download_with_callback};
 use jbot_core::database as db;
 use jbot_core::progress::{Progress, ProgressStyle};
-use jbot_core::utils::upload_file_with_callback;
+use jbot_core::utils::upload_file_with_progress;
 use jbot_core::{FFmpeg, id};
 use regex::regex;
 use tokio::fs;
@@ -260,7 +260,7 @@ async fn send_bili(
     let duration: f64 = page.duration.into();
     let w: i32 = page.dimension.width.into();
     let h: i32 = page.dimension.height.into();
-    let first_frame = page.first_frame;
+    let first_frame = page.first_frame.as_ref().unwrap_or(&pic);
 
     let key = format!("{bvid}_{cid}");
 
@@ -494,8 +494,8 @@ async fn send_bili(
                 info!("{tip}");
                 bar.set_style(ProgressStyle::Size);
                 bar.set_prefix(&tip);
-                let Ok(uploaded) = upload_file_with_callback(&client, path, |uploaded, total| {
-                    bar.update(uploaded, total);
+                let Ok(uploaded) = upload_file_with_progress(&client, path, |uploaded, total| {
+                    bar.update(uploaded, Some(total));
                 })
                 .await
                 else {

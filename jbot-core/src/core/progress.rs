@@ -375,18 +375,20 @@ impl ProgressRunner {
 
 pub struct ProgressReader<T, F> {
     inner: T,
-    callback: F,
-    uploaded: usize,
-    total: Option<usize>,
+    on_progress: F,
+    read: usize,
 }
 
 impl<T, F> ProgressReader<T, F> {
-    pub fn new(inner: T, callback: F, total: Option<usize>) -> Self {
+    pub fn new(inner: T, on_progress: F) -> Self
+    where
+        T: AsyncRead + Unpin,
+        F: FnMut(usize) + Unpin,
+    {
         Self {
             inner,
-            callback,
-            uploaded: 0,
-            total,
+            on_progress,
+            read: 0,
         }
     }
 }
@@ -394,7 +396,7 @@ impl<T, F> ProgressReader<T, F> {
 impl<T, F> AsyncRead for ProgressReader<T, F>
 where
     T: AsyncRead + Unpin,
-    F: Fn(usize, Option<usize>) + Unpin,
+    F: FnMut(usize) + Unpin,
 {
     fn poll_read(
         self: Pin<&mut Self>,
@@ -403,20 +405,18 @@ where
     ) -> Poll<io::Result<()>> {
         let before = buf.filled().len();
 
-        let me = self.get_mut();
-        match Pin::new(&mut me.inner).poll_read(cx, buf) {
-            Poll::Ready(Ok(())) => {
-                let after = buf.filled().len();
-                let bytes_read = after - before;
+        let this = self.get_mut();
+        match Pin::new(&mut this.inner).poll_read(cx, buf) {
+            Poll::Ready(Ok(())) => {}
+            other => return other,
+        };
 
-                if bytes_read > 0 {
-                    me.uploaded += bytes_read;
-                    (me.callback)(me.uploaded, me.total);
-                }
-
-                Poll::Ready(Ok(()))
-            }
-            other => other,
+        let n = buf.filled().len() - before;
+        if n > 0 {
+            this.read += n;
+            (this.on_progress)(this.read);
         }
+
+        Poll::Ready(Ok(()))
     }
 }

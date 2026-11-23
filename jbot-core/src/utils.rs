@@ -6,7 +6,7 @@ use grammers_client::peer::Peer;
 use grammers_session::types::PeerId;
 use grammers_tl_types as tl;
 use tokio::fs;
-use tokio::io::{self, AsyncSeekExt};
+use tokio::io;
 
 use crate::progress::ProgressReader;
 
@@ -64,25 +64,24 @@ pub fn can_grouped(media: &Media) -> bool {
     }
 }
 
-pub async fn upload_file_with_callback<P, F>(
+pub async fn upload_file_with_progress<P, F>(
     client: &Client,
     path: P,
-    progress_callback: F,
+    mut on_progress: F,
 ) -> Result<Uploaded, io::Error>
 where
     P: AsRef<Path>,
-    F: Fn(usize, Option<usize>) + Unpin,
+    F: FnMut(usize, usize) + Unpin,
 {
     let path = path.as_ref();
 
-    let mut file = fs::File::open(path).await?;
-    let size = file.seek(io::SeekFrom::End(0)).await? as usize;
-    file.seek(io::SeekFrom::Start(0)).await?;
+    let file = fs::File::open(path).await?;
+    let size = file.metadata().await?.len() as usize;
 
     // File name will only be `None` for `..` path, and directories cannot be uploaded as
     // files, so it's fine to unwrap.
     let name = path.file_name().unwrap().to_string_lossy().to_string();
 
-    let mut bar = ProgressReader::new(file, progress_callback, Some(size));
+    let mut bar = ProgressReader::new(file, |read| on_progress(read, size));
     client.upload_stream(&mut bar, size, name).await
 }

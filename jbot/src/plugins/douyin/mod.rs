@@ -12,7 +12,7 @@ use grammers_tl_types as tl;
 use jbot_core::curl::{get_client, stream_download, stream_download_with_callback};
 use jbot_core::database as db;
 use jbot_core::progress::{Progress, ProgressHandle, ProgressStyle};
-use jbot_core::utils::upload_file_with_callback;
+use jbot_core::utils::upload_file_with_progress;
 use regex::regex;
 use tracing::{error, info, warn};
 use wreq::redirect::Policy;
@@ -534,8 +534,8 @@ async fn send_video(
         info!("{p}");
         bar.set_style(ProgressStyle::Size);
         bar.set_prefix(&p);
-        let Ok(uploaded) = upload_file_with_callback(&client, path, |uploaded, total| {
-            bar.update(uploaded, total);
+        let Ok(uploaded) = upload_file_with_progress(&client, path, |uploaded, total| {
+            bar.update(uploaded, Some(total));
         })
         .await
         else {

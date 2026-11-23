@@ -13,3 +13,9 @@ grammers-tl-types = { git = "https://codeberg.org/Lonami/grammers.git", rev = "e
 grammers-mtproto = { git = "https://codeberg.org/Lonami/grammers.git", rev = "e61cf8585e1e9969ab81eda9fb4725a1500e2d86" }
 
 linkme = { version = "0.3.37", default-features = false }
+
+# [patch.'https://codeberg.org/Lonami/grammers.git']
+# grammers-client = { path = "../grammers/grammers-client" }
+# grammers-session = { path = "../grammers/grammers-session" }
+# grammers-tl-types = { path = "../grammers/grammers-tl-types" }
+# grammers-mtproto = { path = "../grammers/grammers-mtproto" }
