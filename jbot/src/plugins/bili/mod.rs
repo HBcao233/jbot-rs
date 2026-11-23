@@ -12,6 +12,7 @@ use grammers_client::update::Update;
 use grammers_session::storages::SqliteSession;
 use grammers_session::types::{PeerId, PeerKind, PeerRef};
 use grammers_tl_types as tl;
+use jb_core::bili::is_mcdn;
 use jb_core::bili::types::{BiliId, DurlInfo};
 use jbot_core::curl::{get_client, stream_download, stream_download_with_callback};
 use jbot_core::database as db;
@@ -353,17 +354,18 @@ async fn send_bili(
                 let video_path = loop {
                     let url = match urls.next() {
                         Some(url) => {
-                            if url.contains("mcdn.bilivideo") {
+                            let u = Url::parse(url).unwrap();
+                            let host = u.host_str().unwrap();
+                            if is_mcdn(host) {
                                 continue;
                             }
 
-                            let u = Url::parse(url).unwrap();
-                            info!("CDN: {}", u.host().unwrap());
+                            info!("CDN: {}", host);
                             url
                         }
                         None => {
-                            error!("{prefix} 所有下载尝试失败");
-                            let tip = format!("{prefix} 所有下载尝试失败，请重试");
+                            error!("{prefix} 所有视频下载尝试失败");
+                            let tip = format!("{prefix} 所有视频下载尝试失败，请重试");
                             bar.edit(tip);
                             bar.finish();
                             let _ = progress_task.await;
@@ -396,7 +398,7 @@ async fn send_bili(
                     {
                         Ok(path) => break path,
                         Err(e) => {
-                            warn!("{prefix} i={i} 下载失败: {e}");
+                            warn!("{prefix} i={i} 视频下载失败: {e}");
                         }
                     }
 
@@ -417,17 +419,18 @@ async fn send_bili(
                         let audio_path = loop {
                             let url = match urls.next() {
                                 Some(url) => {
-                                    if url.contains("mcdn.bilivideo") {
+                                    let u = Url::parse(url).unwrap();
+                                    let host = u.host_str().unwrap();
+                                    if is_mcdn(host) {
                                         continue;
                                     }
 
-                                    let u = Url::parse(url).unwrap();
-                                    info!("CDN: {}", u.host().unwrap());
+                                    info!("CDN: {}", host);
                                     url
                                 }
                                 None => {
-                                    error!("{prefix} 所有下载尝试失败");
-                                    let tip = format!("{prefix} 所有下载尝试失败，请重试");
+                                    error!("{prefix} 所有音频下载尝试失败");
+                                    let tip = format!("{prefix} 所有音频下载尝试失败，请重试");
                                     bar.edit(tip);
                                     bar.finish();
                                     let _ = progress_task.await;
@@ -436,7 +439,7 @@ async fn send_bili(
                             };
 
                             let tip = format!(
-                                "{prefix} 下载视频中{}...",
+                                "{prefix} 下载音频中{}...",
                                 if i == 0 {
                                     String::new()
                                 } else {
@@ -460,7 +463,7 @@ async fn send_bili(
                             {
                                 Ok(audio_path) => break audio_path,
                                 Err(e) => {
-                                    warn!("{prefix} i={i} 下载失败: {e}");
+                                    warn!("{prefix} i={i} 音频下载失败: {e}");
                                 }
                             }
 
