@@ -198,6 +198,7 @@ impl ProgressRunner {
             }
             Command::Rebuild { client } => {
                 self.rebuilding = Some(Rebuilding { client });
+                self.deleted = false;
                 self.delete().await;
                 ControlFlow::Continue(())
             }
