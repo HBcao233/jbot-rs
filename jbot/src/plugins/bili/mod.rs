@@ -12,7 +12,7 @@ use grammers_client::update::Update;
 use grammers_session::storages::SqliteSession;
 use grammers_session::types::{PeerId, PeerKind, PeerRef};
 use grammers_tl_types as tl;
-use jb_core::bili::is_mcdn;
+use jb_core::bili::is_pcdn;
 use jb_core::bili::types::{BiliId, DurlInfo};
 use jbot_core::curl::{get_client, stream_download, stream_download_with_callback};
 use jbot_core::database as db;
@@ -356,7 +356,7 @@ async fn send_bili(
                         Some(url) => {
                             let u = Url::parse(url).unwrap();
                             let host = u.host_str().unwrap();
-                            if is_mcdn(host) {
+                            if is_pcdn(host) {
                                 continue;
                             }
 
@@ -421,7 +421,7 @@ async fn send_bili(
                                 Some(url) => {
                                     let u = Url::parse(url).unwrap();
                                     let host = u.host_str().unwrap();
-                                    if is_mcdn(host) {
+                                    if is_pcdn(host) {
                                         continue;
                                     }
 
